@@ -452,7 +452,7 @@ async function runQueries() {
                 end_time TIMESTAMP NOT NULL,
                 duration INTEGER NOT NULL,
                 was_interrupted BOOLEAN NOT NULL DEFAULT FALSE,
-                users_id INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL
+                users_id INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
                 stage_id INTEGER NOT NULL DEFAULT 0);
             `);
 
@@ -499,7 +499,7 @@ async function runQueries() {
 
         // Заполнение таблицы stages
         await runQuery(newClient, `
-            INSERT INTO stages (task_id, stage_name, description, status_id, deadline, pomodoros_planned, order_stage_in_list) VALUES
+            INSERT INTO stages (task_id, stage_name, description, deadline, pomodoros_planned, order_stage_in_list) VALUES
             (2, 'Анализ требований', 'Сбор и анализ требований к базе данных', '2026-08-15', 2, 1),
             (2, 'Проектирование схемы', 'Создание ER-диаграммы и схемы БД', '2026-08-25', 3, 2),
             (2, 'Реализация таблиц', 'Написание SQL для создания таблиц', '2026-09-05', 3, 3),
