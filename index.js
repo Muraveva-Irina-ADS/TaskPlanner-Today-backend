@@ -234,7 +234,6 @@ app.get('/api/profile_matrix_email/:id', authMiddleware, async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Пользователь не найден' });
     }
-    console.log(result.rows)
     res.json(result.rows);
   } catch (err) {
     console.error(err);
@@ -254,7 +253,6 @@ app.get('/api/matrix_for_task/', authMiddleware, async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Пользователь не найден' });
     }
-    console.log(result.rows)
     res.json(result.rows);
   } catch (err) {
     console.error(err);
@@ -733,7 +731,6 @@ app.get('/api/projects_with_users/', authMiddleware, async (req, res) => {
 app.put('/api/projects_put/:id',  authMiddleware, async (req, res) => {
   const { id } = req.params;
   const { formData } = req.body;
-  console.log(formData)
   if (!formData.project_name || !formData.description) {
       return res.status(400).json({ error: 'Все поля должны быть заполнены перед добавлением' });
   }
@@ -749,9 +746,20 @@ app.put('/api/projects_put/:id',  authMiddleware, async (req, res) => {
       res.status(500).json({ error: 'Ошибка изменения проекта' });
   }
 });
+async function checkProjectAccess(projectId, userEmail) {
+  const result = await pool.query(`SELECT projects.id FROM projects JOIN users ON projects.users_id = users.id 
+      WHERE projects.id = $1 AND users.email = $2`, [projectId, userEmail]);
+  return result.rows.length > 0;
+}
 app.get('/api/project/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
+    const emailFromToken = req.userEmail;
+    const role = req.userRole;
+    const hasAccess = await checkProjectAccess(id, emailFromToken);
+    if (role === 'user' && !hasAccess) {
+        return res.status(403).json({ error: 'Нет доступа' });
+    }
     let query;
     query = 'SELECT * FROM projects WHERE id = $1';
     const result = await pool.query(query, [id]);
@@ -767,6 +775,12 @@ app.get('/api/project/:id', authMiddleware, async (req, res) => {
 app.get('/api/tasks/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
+    const emailFromToken = req.userEmail;
+    const role = req.userRole;
+    const hasAccess = await checkProjectAccess(id, emailFromToken);
+    if (role === 'user' && !hasAccess) {
+        return res.status(403).json({ error: 'Нет доступа' });
+    }
     let query;
     query = 'SELECT tasks.*, status.status_name, dates_tasks.execution_date, execution_status.exec_status_name, execution_status.code, execution_status.exec_color FROM dates_tasks LEFT JOIN tasks ON dates_tasks.task_id = tasks.id LEFT JOIN status ON tasks.status_id = status.id LEFT JOIN execution_status ON dates_tasks.exec_status_id = execution_status.id WHERE project_id = $1 AND status.system_code != \'завершение\' ORDER BY dates_tasks.execution_date';
     const result = await pool.query(query, [id]);
@@ -974,7 +988,22 @@ app.get('/api/all_tasks_to_all_projects_only_complete/', authMiddleware, async (
 app.get('/api/info_task/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const { execution_date } = req.query;
+    let { execution_date } = req.query;
+    const emailFromToken = req.userEmail;
+    const role = req.userRole;
+    const taskAccess = await pool.query(`SELECT tasks.id FROM tasks JOIN projects ON tasks.project_id = projects.id
+       JOIN users ON projects.users_id = users.id WHERE tasks.id = $1 AND users.email = $2`, [id, emailFromToken]);
+    if (role === 'user' && taskAccess.rows.length === 0) {
+      return res.status(403).json({ error: 'Нет доступа к этой задаче' });
+    }
+    if (!execution_date || execution_date === 'null' || execution_date === 'undefined') {
+      const minDateResult = await pool.query(`SELECT MIN(execution_date) as min_date 
+         FROM dates_tasks WHERE task_id = $1`, [id]);
+      execution_date = minDateResult.rows[0]?.min_date;
+      if (!execution_date) {
+        return res.status(404).json({ error: 'У задачи нет сроков выполнения' });
+      }
+    }
     let query;
     query = 'SELECT tasks.*, projects.project_name, projects.color, projects.is_active, projects.id as project_id, matrix.matrix_name, matrix.color as matrix_color, matrix.id as matrix_id, dates_tasks.execution_date, dates_tasks.planned_start_time, dates_tasks.planned_end_time, dates_tasks.actual_start_time, dates_tasks.actual_end_time, execution_status.exec_status_name, execution_status.code, execution_status.exec_color, dates_tasks.exec_status_id, dates_tasks.id as dates_tasks_id, settings.start_working_day, settings.end_working_day, status.status_name, status.system_code FROM tasks LEFT JOIN projects ON tasks.project_id = projects.id LEFT JOIN matrix ON tasks.matrix_id = matrix.id LEFT JOIN dates_tasks ON dates_tasks.task_id = tasks.id LEFT JOIN settings ON projects.users_id = settings.users_id LEFT JOIN status ON status.id = tasks.status_id LEFT JOIN execution_status ON execution_status.id = dates_tasks.exec_status_id WHERE tasks.id = $1 AND dates_tasks.execution_date = $2';
     const result = await pool.query(query, [id, execution_date]);
@@ -1193,7 +1222,7 @@ app.get('/api/info_dates_stages/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
     const result = await pool.query('SELECT dates_stages.*, execution_status.exec_status_name, execution_status.code, execution_status.exec_color FROM dates_stages LEFT JOIN execution_status ON dates_stages.exec_status_id = execution_status.id WHERE stage_id = $1 ORDER BY execution_date', [id]);
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Сроки задачи не найдены' });
+      return res.status(404).json({ error: 'Сроки этапа не найдены' });
     }
     res.json(result.rows);
   } catch (err) {
@@ -1405,7 +1434,22 @@ app.post('/api/pomodoro_history_add', authMiddleware, async (req, res) => {
 app.get('/api/stages/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const { execution_date } = req.query;
+    let { execution_date } = req.query;
+    const emailFromToken = req.userEmail;
+    const role = req.userRole;
+    const taskAccess = await pool.query(`SELECT tasks.id FROM tasks JOIN projects ON tasks.project_id = projects.id
+       JOIN users ON projects.users_id = users.id WHERE tasks.id = $1 AND users.email = $2`, [id, emailFromToken]);
+    if (role === 'user' && taskAccess.rows.length === 0) {
+      return res.status(403).json({ error: 'Нет доступа к этой задаче' });
+    }
+    if (!execution_date || execution_date === 'null' || execution_date === 'undefined') {
+      const minDateResult = await pool.query(`SELECT MIN(execution_date) as min_date 
+         FROM dates_tasks WHERE task_id = $1`, [id]);
+      execution_date = minDateResult.rows[0]?.min_date;
+      if (!execution_date) {
+        return res.status(404).json({ error: 'У задачи нет сроков выполнения' });
+      }
+    }
     let query;
     query = 'SELECT stages.stage_name, stages.description, stages.order_stage_in_list, dates_stages.*, execution_status.exec_status_name, execution_status.code, execution_status.exec_color FROM stages LEFT JOIN dates_stages ON stages.id = dates_stages.stage_id LEFT JOIN execution_status ON dates_stages.exec_status_id = execution_status.id WHERE task_id = $1 AND execution_date = $2 ORDER BY stages.order_stage_in_list';
     const result = await pool.query(query, [id, execution_date]);
@@ -1482,7 +1526,23 @@ app.put('/api/stage_order_put/', authMiddleware, async (req, res) => {
 app.get('/api/info_stage/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const { execution_date } = req.query;
+    let { execution_date } = req.query;
+    const emailFromToken = req.userEmail;
+    const role = req.userRole;
+    const stageAccess = await pool.query(`SELECT stages.id FROM stages JOIN tasks ON stages.task_id = tasks.id
+       JOIN projects ON tasks.project_id = projects.id JOIN users ON projects.users_id = users.id
+       WHERE stages.id = $1 AND users.email = $2`, [id, emailFromToken]);
+    if (role === 'user' && stageAccess.rows.length === 0) {
+      return res.status(403).json({ error: 'Нет доступа' });
+    }
+    if (!execution_date || execution_date === 'null' || execution_date === 'undefined') {
+      const minDateResult = await pool.query(`SELECT MIN(execution_date) as min_date 
+         FROM dates_stages WHERE stage_id = $1`, [id]);
+      execution_date = minDateResult.rows[0]?.min_date;
+      if (!execution_date) {
+        return res.status(404).json({ error: 'У задачи нет сроков выполнения' });
+      }
+    }
     let query;
     query = `SELECT tasks.task_name, status.status_name, stages.*, dates_tasks.exec_status_id as task_exec_status_id,
     dates_stages.execution_date, dates_stages.planned_start_time, dates_stages.planned_end_time, 
@@ -1505,7 +1565,7 @@ app.get('/api/info_stage/:id', authMiddleware, async (req, res) => {
     res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Ошибка при получении информации о задаче' });
+    res.status(500).json({ error: 'Ошибка при получении информации об этапе' });
   }
 });
 app.put('/api/stage_put/:id',  authMiddleware, async (req, res) => {
