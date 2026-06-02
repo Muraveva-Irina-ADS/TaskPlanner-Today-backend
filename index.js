@@ -976,9 +976,6 @@ app.get('/api/all_tasks_to_all_projects_only_complete/', authMiddleware, async (
     LEFT JOIN repeat_types ON repeat_types.id = tasks.repeat_type_id
     LEFT JOIN users ON projects.users_id = users.id WHERE users.email = $1 AND status.system_code = \'завершение\' ORDER BY tasks.deadline`;
     const result = await pool.query(query, [emailFromToken]);
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'У Вас нет завершенных задач, они появятся, когда вы завершите хотя бы одну задачу' });
-    }
     res.json(result.rows);
   } catch (err) {
     console.error(err);
