@@ -829,40 +829,6 @@ app.get('/api/tasks_to_user', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Ошибка при получении информации о задачах проекта' });
   }
 });
-app.get('/api/dates_tasks_history_to_user', authMiddleware, async (req, res) => {
-  const emailFromToken = req.userEmail;
-  const { startDate, endDate } = req.query;
-  try {
-    let query;
-    query = `
-      SELECT
-        tasks.task_name,
-        tasks.id as task_id,
-        projects.id as project_id,
-        status.status_name,
-        to_char(dates_tasks_history.execution_date, 'YYYY-MM-DD') as execution_date,
-        projects.project_name,
-        projects.color as project_color,
-        matrix.matrix_name,
-        matrix.color as matrix_color
-      FROM dates_tasks_history
-      LEFT JOIN tasks ON dates_tasks_history.task_id = tasks.id 
-      LEFT JOIN status ON tasks.status_id = status.id
-      LEFT JOIN matrix ON tasks.matrix_id = matrix.id
-      LEFT JOIN projects ON tasks.project_id = projects.id 
-      LEFT JOIN users ON projects.users_id = users.id 
-      WHERE users.email = $1 AND dates_tasks_history.execution_date BETWEEN $2::date AND $3::date
-    `;
-    const result = await pool.query(query, [emailFromToken, startDate, endDate]);
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Задачи пользователя не найдены, в указанный период задач нет' });
-    }
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Ошибка при получении информации о задачах проекта' });
-  }
-});
 app.get('/api/dates_tasks', authMiddleware, async (req, res) => {
   try {
     let query;
@@ -889,59 +855,6 @@ app.get('/api/dates_stages', authMiddleware, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Ошибка при получении информации о сроках задач' });
-  }
-});
-app.get('/api/export_date_from_dates_tasks_history', authMiddleware, async (req, res) => {
-  try {
-    let query;
-    query = 'SELECT MAX(execution_date) as last_export_date FROM dates_tasks_history';
-    const result = await pool.query(query);
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Дата последней выгрузки сроков задач не найдена' });
-    }
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Ошибка при получении информации о последней выгрузке сроков задач' });
-  }
-});
-app.post('/api/dates_tasks_history_add', authMiddleware, async (req, res) => {
-  const { dateInput } = req.body;
-  if (!dateInput) {
-      return res.status(400).json({ error: 'Все поля должны быть заполнены перед добавлением' });
-  }
-  try {
-    await pool.query('BEGIN');
-    const datesTasks = await pool.query(`SELECT * FROM dates_tasks WHERE execution_date BETWEEN 
-      (SELECT MIN(execution_date) FROM dates_tasks) AND $1 ORDER BY execution_date ASC;`, [dateInput]);
-    if (datesTasks.rows.length === 0) {
-      await pool.query('ROLLBACK');
-      return res.status(404).json({ error: 'Нет данных для переноса за указанный период' });
-    }
-   for (const row of datesTasks.rows) {
-      await pool.query(`INSERT INTO dates_tasks_history (dates_tasks_id, task_id, execution_date, planned_start_time, planned_end_time, actual_start_time,
-          actual_end_time, exec_status_id ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, 
-        [row.id, row.task_id, row.execution_date, row.planned_start_time, row.planned_end_time, row.actual_start_time, row.actual_end_time,
-        row.exec_status_id]);
-    }
-    await pool.query(`DELETE FROM dates_tasks WHERE execution_date BETWEEN (SELECT MIN(execution_date) FROM dates_tasks) AND $1`, [dateInput]);
-    const datesStages = await pool.query(`SELECT * FROM dates_stages WHERE execution_date BETWEEN 
-      (SELECT MIN(execution_date) FROM dates_stages) AND $1 ORDER BY execution_date ASC;`, [dateInput]);     
-    if (datesStages.rows.length !== 0) {
-      for (const row of datesStages.rows) {
-          await pool.query(`INSERT INTO dates_stages_history (dates_stages_id, stage_id, execution_date, planned_start_time, planned_end_time, actual_start_time,
-              actual_end_time, exec_status_id ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, 
-            [row.id, row.stage_id, row.execution_date, row.planned_start_time, row.planned_end_time, row.actual_start_time, row.actual_end_time,
-            row.exec_status_id]);
-        }
-        await pool.query(`DELETE FROM dates_stages WHERE execution_date BETWEEN (SELECT MIN(execution_date) FROM dates_stages) AND $1`, [dateInput]);
-    }
-    await pool.query('COMMIT');
-    res.json({message: `Успешно перенесены записи`});
-  } catch (err) {
-      await pool.query('ROLLBACK');
-      console.error(err);
-      res.status(500).json({ error: 'Ошибка выгрузки данных в таблицу Сроков задач' });
   }
 });
 app.get('/api/all_tasks_to_all_projects_not_complete/', authMiddleware, async (req, res) => {
@@ -1385,47 +1298,6 @@ app.get('/api/pomodoro', authMiddleware, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Ошибка при получении информации о сроках помодоро' });
-  }
-});
-app.get('/api/export_date_from_pomodoro_history', authMiddleware, async (req, res) => {
-  try {
-    let query;
-    query = 'SELECT MAX(pomodoro_date) as last_export_date FROM pomodoro_history';
-    const result = await pool.query(query);
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Дата последней выгрузки сроков помодоро не найдена' });
-    }
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Ошибка при получении информации о последней выгрузке сроков помодоро' });
-  }
-});
-app.post('/api/pomodoro_history_add', authMiddleware, async (req, res) => {
-  const { dateInput } = req.body;
-  if (!dateInput) {
-      return res.status(400).json({ error: 'Все поля должны быть заполнены перед добавлением' });
-  }
-  try {
-    await pool.query('BEGIN');
-    const datesTasks = await pool.query(`SELECT * FROM pomodoro WHERE pomodoro_date BETWEEN 
-      (SELECT MIN(pomodoro_date) FROM pomodoro) AND $1 ORDER BY pomodoro_date ASC;`, [dateInput]);
-    if (datesTasks.rows.length === 0) {
-      await pool.query('ROLLBACK');
-      return res.status(404).json({ error: 'Нет данных для переноса за указанный период' });
-    }
-   for (const row of datesTasks.rows) {
-      await pool.query(`INSERT INTO pomodoro_history (pomodoro_id, task_id, pomodoro_date, start_time, end_time, duration, was_interrupted, users_id ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, 
-        [row.id, row.task_id, row.pomodoro_date, row.start_time, row.end_time, row.duration, row.was_interrupted,
-        row.users_id]);
-    }
-    await pool.query(`DELETE FROM pomodoro WHERE pomodoro_date BETWEEN (SELECT MIN(pomodoro_date) FROM pomodoro) AND $1`, [dateInput]);
-    await pool.query('COMMIT');
-    res.json({message: `Успешно перенесены записи`});
-  } catch (err) {
-      await pool.query('ROLLBACK');
-      console.error(err);
-      res.status(500).json({ error: 'Ошибка выгрузки данных в таблицу Сроков помодоро' });
   }
 });
 app.get('/api/stages/:id', authMiddleware, async (req, res) => {

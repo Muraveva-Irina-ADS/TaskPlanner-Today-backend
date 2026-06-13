@@ -546,69 +546,6 @@ async function runQueries() {
             (3, '2026-08-20', '13:00:00', '15:00:00', 2),
             (4, '2026-08-05', '08:30:00', '10:00:00', 3);
         `);              
-        // Создание исторической таблицы для dates_stages
-        await runQuery(newClient, `
-            CREATE TABLE IF NOT EXISTS dates_stages_history (
-                id SERIAL PRIMARY KEY,
-                dates_stages_id INTEGER NOT NULL,
-                stage_id INTEGER NOT NULL,
-                execution_date DATE NOT NULL,
-                planned_start_time TIME NOT NULL DEFAULT '00:00:00',
-                planned_end_time TIME NOT NULL DEFAULT '00:00:00',
-                actual_start_time TIME NOT NULL DEFAULT '00:00:00',
-                actual_end_time TIME NOT NULL DEFAULT '00:00:00',
-                exec_status_id INTEGER NOT NULL REFERENCES execution_status(id) ON DELETE RESTRICT);
-        `);
-               
-        // Создание исторической таблицы для pomodoro
-        await runQuery(newClient, `
-            CREATE TABLE IF NOT EXISTS pomodoro_history (
-                id SERIAL PRIMARY KEY,
-                pomodoro_id INTEGER NOT NULL,
-                task_id INTEGER NOT NULL,
-                pomodoro_date DATE NOT NULL,
-                start_time TIMESTAMP NOT NULL,
-                end_time TIMESTAMP NOT NULL,
-                duration INTEGER NOT NULL,
-                was_interrupted BOOLEAN NOT NULL DEFAULT FALSE,
-                users_id INTEGER NOT NULL);               
-        `);
-
-        // Создание исторической таблицы для dates_tasks_history
-        await runQuery(newClient, `
-            CREATE TABLE IF NOT EXISTS dates_tasks_history (
-                id SERIAL PRIMARY KEY,
-                dates_tasks_id INTEGER NOT NULL,
-                task_id INTEGER NOT NULL,
-                execution_date DATE NOT NULL,
-                planned_start_time TIME NOT NULL DEFAULT '00:00:00',
-                planned_end_time TIME NOT NULL DEFAULT '00:00:00',
-                actual_start_time TIME NOT NULL DEFAULT '00:00:00',
-                actual_end_time TIME NOT NULL DEFAULT '00:00:00',
-                exec_status_id INTEGER NOT NULL REFERENCES execution_status(id) ON DELETE RESTRICT);
-        `);
-
-        // Заполнение исторических таблиц
-        await runQuery(newClient, `
-            INSERT INTO pomodoro_history (pomodoro_id, task_id, pomodoro_date, start_time, end_time, duration, was_interrupted, users_id) VALUES
-            (1, 1, '2026-01-05', '2026-01-05 09:00:00', '2026-01-05 09:30:00', 30, FALSE, 1),
-            (2, 1, '2026-01-05', '2026-01-05 09:30:00', '2026-01-05 10:00:00', 30, FALSE, 1),
-            (3, 2, '2026-01-10', '2026-01-10 10:00:00', '2026-01-10 10:30:00', 30, FALSE, 2);
-        `);
-
-        await runQuery(newClient, `
-            INSERT INTO dates_tasks_history (dates_tasks_id, task_id, execution_date, planned_start_time, planned_end_time, actual_start_time, actual_end_time, exec_status_id) VALUES
-            (1, 1, '2026-01-05', '09:00:00', '11:00:00', '09:05:00', '10:50:00', 3),
-            (2, 1, '2026-01-10', '14:00:00', '16:00:00', '14:10:00', '15:45:00', 2),
-            (3, 2, '2026-01-15', '10:00:00', '12:00:00', '10:00:00', '11:30:00', 3);
-        `);
-
-        await runQuery(newClient, `
-            INSERT INTO dates_stages_history (dates_stages_id, stage_id, execution_date, planned_start_time, planned_end_time, actual_start_time, actual_end_time, exec_status_id) VALUES
-            (1, 1, '2026-01-05', '09:00:00', '10:30:00', '09:10:00', '10:20:00', 3),
-            (2, 1, '2026-01-10', '14:00:00', '15:30:00', '14:15:00', '15:15:00', 2),
-            (3, 2, '2026-01-15', '10:00:00', '12:00:00', '10:05:00', '11:45:00', 3);
-        `);
 
         console.log('База данных успешно создана и заполнена данными.');
     } catch (error) {
