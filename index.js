@@ -24,19 +24,45 @@ app.use(express.json());
 
 // Функция для генерации JWT
 const generateToken = (user) => jwt.sign(user, process.env.JWT_SECRET, { expiresIn: '1h' });
-
+const validateUserData = (user, res) => {
+  const { first_name, last_name, email, phone_number, birthday } = user;
+    if (!first_name || !last_name || !email || !phone_number || !birthday) {
+      return res.status(400).json({ error: 'Все поля должны быть заполнены' });
+  }
+  const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+.[a-zA-Z]{2,}$/;
+  if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Введите корректный email с символом @ и .' });
+  }
+  const phoneRegex = /^[0-9+\-\s()]{10,20}$/;
+  if (!phoneRegex.test(phone_number)) {
+      return res.status(400).json({ error: 'Некорректный формат номера телефона' });
+  }  
+  const birthDate = new Date(birthday);
+  const today = new Date();
+  if (isNaN(birthDate.getTime())) {
+      return res.status(400).json({ error: 'Некорректный формат даты рождения' });
+  }
+  if (birthDate > today) {
+      return res.status(400).json({ error: 'Дата рождения не может быть в будущем' });
+  }
+  return true;
+};
 //Регистрация
 app.post('/api/registration', async (req, res) => {
     const { first_name, last_name, email, password, phone_number, birthday } = req.body;
-    if (!first_name || !last_name || !email || !password || !phone_number || !birthday) {
-        return res.status(400).json({ error: 'Все поля должны быть заполнены' });
-    }
+    const isValid = validateUserData(req.body, res);
+    if (isValid !== true) return;
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Пароль должен содержать не менее 6 символов' });
+  }
     const hashedPassword = await bcrypt.hash(password, 10);
     try {
       await pool.query('BEGIN');
       const existingUser = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-      if (existingUser.rows.length > 0)
-        return res.status(400).json({ error: 'Пользователь с таким email уже существует' });      
+      if (existingUser.rows.length > 0) {
+        await pool.query('ROLLBACK');
+        return res.status(400).json({ error: 'Пользователь с таким email уже существует' }); 
+      }     
       const result = await pool.query(`INSERT INTO users (first_name, last_name, email, password, role_name, birthday, phone_number, note, 
           created_at, last_password_change_date)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) 
@@ -107,9 +133,6 @@ app.get('/api/profile_settings_email/', authMiddleware, async (req, res) => {
     try {
       let query;
       let values = [email];
-      if (req.userRole !== 'admin' && req.userEmail !== email) {
-        return res.status(403).json({ error: 'Нет доступа к данным другого пользователя' });
-      }
       query = 'SELECT settings.* FROM settings JOIN users ON settings.users_id = users.id WHERE users.email = $1';
       const result = await pool.query(query, values);
       if (result.rows.length === 0) {
@@ -119,38 +142,37 @@ app.get('/api/profile_settings_email/', authMiddleware, async (req, res) => {
     } catch (err) {
       console.error(err);
       res.status(500).json({ error: 'Ошибка при получении информации о пользователе' });
-    }
-  });
-app.get('/api/profile_user_email/', authMiddleware, async (req, res) => {
-  const email = req.userEmail;
-    try {
-      let query;
-      let values = [email];
-      if (req.userEmail !== email) {
-        return res.status(403).json({ error: 'Нет доступа к данным другого пользователя' });
-      }
-      query = 'SELECT * FROM users WHERE users.email = $1';
-      const result = await pool.query(query, values);
-      if (result.rows.length === 0) {
-        return res.status(404).json({ error: 'Пользователь не найден' });
-      }
-      res.json(result.rows[0]);
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: 'Ошибка при получении информации о пользователе' });
-    }
-  });
+  }});
+  app.get('/api/profile_user_email/', authMiddleware, async (req, res) => {
+    const email = req.userEmail;
+      try {
+       let query = 'SELECT * FROM users WHERE users.email = $1';
+        const result = await pool.query(query, [email]);
+        if (result.rows.length === 0)
+          return res.status(404).json({ error: 'Пользователь не найден' });
+        const user = result.rows[0];
+        delete user.password;
+        res.json(user);
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Ошибка при получении информации о пользователе' });
+  }});  
 app.put('/api/profile_put/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
+  const role = req.userRole;
   const { last_name, first_name, email, curPassword, newPassword, phone_number, birthday, role_name, note } = req.body;
       try {
           const userExists = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
           if (userExists.rows.length === 0) {
               return res.status(404).json({ error: 'Пользователь не найден' });
           }
-          if (!first_name || !last_name || !email || !role_name || !note || !phone_number || !birthday) {
+          if (!role_name || !note) {
               return res.status(400).json({ error: 'Все поля должны быть заполнены перед изменением' });
           }
+          if (role === 'user' && role_name !== 'user')
+            return res.status(400).json({ error: 'Нет доступа' });
+          const isValid = validateUserData(req.body, res);
+          if (isValid !== true) return;
           if (userExists.rows[0].email != email) {
               const existingUser = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
               if (existingUser.rows.length > 0) {
@@ -197,14 +219,46 @@ app.put('/api/profile_put/:id', authMiddleware, async (req, res) => {
             res.status(500).json({ error: 'Ошибка обновления информации о пользователе' });
       }
 });
+const validateSettingsData = (formData, res) => {
+  if (!formData.limit_tasks || !formData.pomodoro_duration || !formData.start_working_day || !formData.end_working_day || !formData.number_pomodoro_per_day || !formData.rest_duration)
+    return res.status(400).json({ error: 'Все поля должны быть заполнены перед изменением' });
+  if (formData.limit_tasks <= 0 || formData.pomodoro_duration <= 0 || formData.number_pomodoro_per_day <= 0 || formData.rest_duration <= 0)
+    return res.status(400).json({ error: 'Все поля должны быть заполнены неотрицательными числами' });
+  if (formData.pomodoro_duration > 60 || formData.rest_duration > 60)
+    return res.status(400).json({ error: 'Длительность помидора или отдыха не должна превышать одного часа' });        
+  if (!Number.isInteger(Number(formData.limit_tasks))) return res.status(400).json({ error: 'Лимит задач должен быть целым числом' });
+  if (!Number.isInteger(Number(formData.pomodoro_duration))) return res.status(400).json({ error: 'Длительность помидора должна быть целым числом' });
+  if (!Number.isInteger(Number(formData.number_pomodoro_per_day))) return res.status(400).json({ error: 'Максимальное количество помидоров в день должно быть целым числом' });
+  if (!Number.isInteger(Number(formData.rest_duration))) return res.status(400).json({ error: 'Длительность отдыха должна быть целым числом' });
+  const timeToMinutes = (timeStr) => {
+    const [hours, minutes] = timeStr.split(':').map(Number);
+    return hours * 60 + minutes;
+  };
+  const startMinutes = timeToMinutes(formData.start_working_day);
+  const endMinutes = timeToMinutes(formData.end_working_day);
+  let workingDayMinutes;
+  if (endMinutes >= startMinutes)
+    workingDayMinutes = endMinutes - startMinutes;
+  else return res.status(400).json({ error: 'Рабочий день должен быть в пределах одних суток' });
+  if (workingDayMinutes < 60)
+    return res.status(400).json({ error: 'Рабочий день должен быть не менее 1 часа' });
+  const pomodoroCycleMinutes = Number(formData.pomodoro_duration) + Number(formData.rest_duration);
+  const maxPossiblePomodoros = Math.floor(workingDayMinutes / pomodoroCycleMinutes);
+  if (formData.number_pomodoro_per_day > maxPossiblePomodoros)
+    return res.status(400).json({ error: `Запрошено слишком много помидоров. Максимально возможное количество для вашего рабочего дня: ${maxPossiblePomodoros}` });
+  return true;
+};
 //Изменение данных о настройках пользователя по id
 app.put('/api/settings_put/:users_id', authMiddleware, async (req, res) => {
+  const email = req.userEmail;
   const { users_id } = req.params;
   const { formData } = req.body;
-      try {
-        if (!formData.limit_tasks || !formData.pomodoro_duration || !formData.start_working_day || !formData.end_working_day || !formData.number_pomodoro_per_day || !formData.rest_duration) {
-          return res.status(400).json({ error: 'Все поля должны быть заполнены перед изменением' });
-        }
+  try {
+      const existingUser = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+      if (existingUser.rows.length != 1 || existingUser.rows[0].id !== Number(users_id))
+          return res.status(400).json({ error: 'Выполнение запроса недопустимо' });
+      const isValid = validateSettingsData(formData, res);
+      if (isValid !== true) return;
       const result = await pool.query('UPDATE settings SET limit_tasks = $1, pomodoro_duration = $2, start_working_day = $3, end_working_day = $4, number_pomodoro_per_day = $5, rest_duration = $6 WHERE users_id = $7 RETURNING *',
             [formData.limit_tasks, formData.pomodoro_duration, formData.start_working_day, formData.end_working_day, formData.number_pomodoro_per_day, formData.rest_duration, users_id]);
             res.json({ settings: result.rows[0] });
@@ -222,17 +276,17 @@ app.get('/api/profile_matrix_email/:id', authMiddleware, async (req, res) => {
   const project_id = req.params.id;
   try {
     let query;
-    if (req.userRole !== 'admin' && req.userEmail !== email) {
-      return res.status(403).json({ error: 'Нет доступа к данным другого пользователя' });
-    }
     if (userRole === 'admin' && project_id !== '0') {
-      const res = await pool.query(`SELECT users.email from users LEFT JOIN projects ON projects.users_id = users.id WHERE projects.id = $1`, [project_id])
-      email = res.rows[0].email;
+      const res1 = await pool.query(`SELECT users.email from users LEFT JOIN projects ON projects.users_id = users.id WHERE projects.id = $1`, [project_id])
+      if (res1.rows.length === 0) {
+        return res.status(404).json({ error: 'Пользователь не найден' });
+      }
+      email = res1.rows[0].email;
     }
     query = 'SELECT matrix.* FROM matrix LEFT JOIN users ON matrix.users_id = users.id WHERE users.email = $1 ORDER BY matrix_part';
     const result = await pool.query(query, [email]);
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Пользователь не найден' });
+      return res.status(404).json({ error: 'Матрица не найден' });
     }
     res.json(result.rows);
   } catch (err) {
@@ -245,13 +299,10 @@ app.get('/api/matrix_for_task/', authMiddleware, async (req, res) => {
   try {
     let query;
     let values = [email];
-    if (req.userRole !== 'admin' && req.userEmail !== email) {
-      return res.status(403).json({ error: 'Нет доступа к данным другого пользователя' });
-    }
     query = 'SELECT matrix.* FROM matrix LEFT JOIN users ON matrix.users_id = users.id WHERE users.email = $1 ORDER BY matrix_part';
     const result = await pool.query(query, values);
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Пользователь не найден' });
+      return res.status(404).json({ error: 'Настройки матрицы не найдены' });
     }
     res.json(result.rows);
   } catch (err) {
@@ -262,14 +313,23 @@ app.get('/api/matrix_for_task/', authMiddleware, async (req, res) => {
 //Изменение данных о настройках матрицы пользователя по id
 app.put('/api/matrix_put/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
-  const { users_id, matrix_part, name, description, color } = req.body;
+  const email = req.userEmail;
+  const { matrix_part, name, description, color } = req.body;
       try {
-          if (matrix_part <= 0 || !name || !description) {
+          if (!matrix_part || matrix_part <= 0 || !name || !description || !color) {
               return res.status(400).json({ error: 'Все поля должны быть заполнены' });
-          }        
-      const result = await pool.query('UPDATE matrix SET users_id = $1, matrix_part = $2, matrix_name = $3, description = $4, color = $5 WHERE id = $6 RETURNING *',
-            [users_id, matrix_part, name, description, color, id]);
-            res.json({ matrix: result.rows[0] });
+          }    
+          const userResult = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+          if (userResult.rows.length === 0) {
+              return res.status(403).json({ error: 'Доступ запрещен' });
+          }
+          const matrixCheck = await pool.query('SELECT id FROM matrix WHERE id = $1 AND users_id = $2', [id, userResult.rows[0].id]);
+          if (matrixCheck.rows.length === 0) {
+              return res.status(403).json({ error: 'У вас нет прав на редактирование этой матрицы или она не существует' });
+          }          
+          const result = await pool.query('UPDATE matrix SET users_id = $1, matrix_part = $2, matrix_name = $3, description = $4, color = $5 WHERE id = $6 RETURNING *',
+                [userResult.rows[0].id, matrix_part, name, description, color, id]);
+                res.json({ matrix: result.rows[0] });
       } catch (err) {
           console.error(err);
           if (err.message.includes('значение не умещается в тип'))
@@ -284,12 +344,12 @@ app.get('/api/profile_status_email/:id', authMiddleware, async (req, res) => {
   const project_id = req.params.id;
   try {
     let query;
-    if (req.userRole !== 'admin' && req.userEmail !== email) {
-      return res.status(403).json({ error: 'Нет доступа к данным другого пользователя' });
-    }
     if (userRole === 'admin' && project_id !== '0') {
-      const res = await pool.query(`SELECT users.email from users LEFT JOIN projects ON projects.users_id = users.id WHERE projects.id = $1`, [project_id])
-      email = res.rows[0].email;
+      const res1 = await pool.query(`SELECT users.email from users LEFT JOIN projects ON projects.users_id = users.id WHERE projects.id = $1`, [project_id])
+      if (res1.rows.length === 0) {
+        return res.status(404).json({ error: 'Пользователь не найден' });
+      }
+      email = res1.rows[0].email;
     }
     query = 'SELECT status.* FROM status JOIN users ON status.users_id = users.id WHERE users.email = $1';
     const result = await pool.query(query, [email]);
@@ -302,13 +362,11 @@ app.get('/api/profile_status_email/:id', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Ошибка при получении информации о настройках статуса пользователя' });
   }
 });
-app.get('/api/profile_settings_note/:note', authMiddleware, async (req, res) => {
-  const { note } = req.params;
+app.get('/api/profile_settings_note', authMiddleware, async (req, res) => {
   try {
     let query;
-    let values = [note];
     query = 'SELECT settings.* FROM settings JOIN users ON settings.users_id = users.id WHERE users.note = $1';
-    const result = await pool.query(query, values);
+    const result = await pool.query(query, ['Администратор системы']);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Настройки администратора не найдены' });
     }
@@ -332,13 +390,11 @@ app.get('/api/profile_matrix_note', async (req, res) => {
     res.status(500).json({ error: 'Ошибка при получении информации о настройках матрицы администратора' });
   }
 });
-app.get('/api/profile_status_note/:note', authMiddleware, async (req, res) => {
-  const { note } = req.params;
+app.get('/api/profile_status_note', authMiddleware, async (req, res) => {
   try {
     let query;
-    let values = [note];
     query = 'SELECT status.* FROM status JOIN users ON status.users_id = users.id WHERE users.note = $1';
-    const result = await pool.query(query, values);
+    const result = await pool.query(query, ["Администратор системы"]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Настройки статусов администратора не найдены' });
     }
@@ -351,14 +407,28 @@ app.get('/api/profile_status_note/:note', authMiddleware, async (req, res) => {
 //Изменение данных о настройках статуса пользователя по id
 app.put('/api/status_put/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
-  const { name, users_id, system_code } = req.body;
+  const email = req.userEmail;
+  const { name, system_code } = req.body;
       try {
-          if (!name) {
+          if (!name || !system_code) {
               return res.status(400).json({ error: 'Все поля должны быть заполнены' });
-          }        
-      const result = await pool.query('UPDATE status SET status_name = $1, users_id = $2, system_code = $3 WHERE id = $4 RETURNING *',
-            [name, users_id, system_code, id]);
-            res.json({ status: result.rows[0] });
+          }  
+          const userResult = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+          if (userResult.rows.length === 0) {
+              return res.status(403).json({ error: 'Доступ запрещен' });
+          }
+          const authUserId = userResult.rows[0].id;
+          const statusCheck = await pool.query('SELECT id FROM status WHERE id = $1 AND users_id = $2', [id, authUserId]);
+          if (statusCheck.rows.length === 0) {
+              return res.status(403).json({ error: 'У вас нет прав на редактирование этого статуса или он не существует' });
+          } 
+          const checkDuplicate = await pool.query('SELECT id FROM status WHERE system_code = $1 LIMIT 1', [system_code]);
+          if (checkDuplicate.rows.length === 0) {
+            return res.status(400).json({ error: 'Статус с таким системным кодом не существует в системе' });
+          }     
+          const result = await pool.query('UPDATE status SET status_name = $1, users_id = $2, system_code = $3 WHERE id = $4 RETURNING *',
+                [name, authUserId, system_code, id]);
+          res.json({ status: result.rows[0] });
       } catch (err) {
           console.error(err);
           if (err.message.includes('значение не умещается в тип'))
@@ -369,6 +439,9 @@ app.put('/api/status_put/:id', authMiddleware, async (req, res) => {
 });
 app.get('/api/settings/', authMiddleware, async (req, res) => {
   try {
+    if (req.userRole !== 'admin') {
+      return res.status(403).json({ error: 'Доступ запрещен. Требуются права администратора.' });
+    }
     let query;
     query = 'SELECT * FROM settings ORDER BY users_id';
     const result = await pool.query(query);
@@ -383,6 +456,9 @@ app.get('/api/settings/', authMiddleware, async (req, res) => {
 });
 app.get('/api/users/', authMiddleware, async (req, res) => {
   try {
+    if (req.userRole !== 'admin') {
+      return res.status(403).json({ error: 'Доступ запрещен. Требуются права администратора.' });
+    }
     let query;
     query = 'SELECT * FROM users ORDER BY id';
     const result = await pool.query(query);
@@ -397,6 +473,9 @@ app.get('/api/users/', authMiddleware, async (req, res) => {
 });
 app.get('/api/matrix/', authMiddleware, async (req, res) => {
   try {
+    if (req.userRole !== 'admin') {
+      return res.status(403).json({ error: 'Доступ запрещен. Требуются права администратора.' });
+    }
     let query;
     query = 'SELECT * FROM matrix ORDER BY id';
     const result = await pool.query(query);
@@ -411,6 +490,9 @@ app.get('/api/matrix/', authMiddleware, async (req, res) => {
 });
 app.get('/api/status/', authMiddleware, async (req, res) => {
   try {
+    if (req.userRole !== 'admin') {
+      return res.status(403).json({ error: 'Доступ запрещен. Требуются права администратора.' });
+    }
     let query;
     query = 'SELECT * FROM status ORDER BY id';
     const result = await pool.query(query);
@@ -426,11 +508,19 @@ app.get('/api/status/', authMiddleware, async (req, res) => {
 //Добавление нового статуса
 app.post('/api/status_add', authMiddleware,  async (req, res) => {
   const { status_name, system_code } = req.body;
+  if (req.userRole !== 'admin') {
+    return res.status(403).json({ error: 'Доступ запрещен. Требуются права администратора.' });
+  }
   if (!status_name || !system_code) {
       return res.status(400).json({ error: 'Все поля должны быть заполнены' });
   }
   try {
     await pool.query('BEGIN');
+    const checkDuplicate = await pool.query('SELECT id FROM status WHERE system_code = $1 LIMIT 1', [system_code]);
+    if (checkDuplicate.rows.length > 0) {
+      await pool.query('ROLLBACK');
+      return res.status(400).json({ error: 'Статус с таким системным кодом уже существует в системе' });
+    }
     const users = await pool.query('SELECT id FROM users');
     const addedStatuses = [];
     for (const user of users.rows) {
@@ -455,7 +545,14 @@ app.post('/api/execution_status_add', authMiddleware,  async (req, res) => {
   if (!exec_status_name || !code || !color) {
       return res.status(400).json({ error: 'Все поля должны быть заполнены' });
   }
+  if (req.userRole !== 'admin') {
+    return res.status(403).json({ error: 'Доступ запрещен. Требуются права администратора.' });
+  }
   try {
+    const checkDuplicate = await pool.query('SELECT id FROM execution_status WHERE code = $1 LIMIT 1', [code]);
+    if (checkDuplicate.rows.length > 0) {
+        return res.status(400).json({ error: 'Статус выполнения с таким кодом уже существует' });
+    }
     const result = await pool.query(`INSERT INTO execution_status (exec_status_name, code, exec_color) VALUES ($1, $2, $3) RETURNING *`,
         [exec_status_name, code, color]
       );
@@ -471,14 +568,21 @@ app.post('/api/execution_status_add', authMiddleware,  async (req, res) => {
 app.post('/api/user_add', authMiddleware, async (req, res) => {
   const { userData } = req.body;
   const emailFromToken = req.userEmail;
-  if (!userData.user.first_name || !userData.user.last_name || !userData.user.email || !userData.user.curPassword ||
-        !userData.user.phone_number || !userData.user.birthday || !userData.user.note ||
-        !userData.settings.limit_tasks || !userData.settings.pomodoro_duration || !userData.settings.start_working_day ||
-        !userData.settings.number_pomodoro_per_day || !userData.settings.rest_duration || !userData.settings.end_working_day) {
-      return res.status(400).json({ error: 'Все поля должны быть заполнены перед добавлением' });
+  if (req.userRole !== 'admin') {
+    return res.status(403).json({ error: 'Доступ запрещен. Требуются права администратора.' });
   }
+  if (!userData || !userData.user || !userData.settings || !userData.matrix || !userData.status) {
+      return res.status(400).json({ error: 'Некорректная структура переданных данных' });
+  }
+  if (!userData.user.curPassword || !userData.user.note || !userData.user.role_name) {
+      return res.status(400).json({ error: 'Все поля должны быть заполнены перед добавлением' });
+  }  
+  const isUserValid = validateUserData(userData.user, res);
+  if (isUserValid !== true) return;
+  const isValid = validateSettingsData(userData.settings, res);
+  if (isValid !== true) return;
   for (const element of userData.matrix)
-      if (element.matrix_part <= 0 || !element.matrix_name || !element.description) {
+      if (!element.matrix_part || element.matrix_part <= 0 || !element.matrix_name || !element.description || !element.color) {
         return res.status(400).json({ error: 'Все поля должны быть заполнены перед добавлением' });
     } 
     for (const elem of userData.status)
@@ -495,10 +599,14 @@ app.post('/api/user_add', authMiddleware, async (req, res) => {
             const result = await pool.query('UPDATE users SET note = $1 WHERE id = $2 RETURNING *',
               ['Недействующий администратор системы', adminUser.rows[0].id]);
             updatedAdminUser = result.rows[0];
-          } else 
+          } else {
+            await pool.query('ROLLBACK');
             return res.status(400).json({ error: 'Этот пользователь не является администратором, поэтому значение "Администратор системы" в поле Замечания для него недопустимы' });
-      } else 
+          }
+      } else {
+        await pool.query('ROLLBACK');
         return res.status(400).json({ error: 'Вы не являетесь главным администратором, поэтому значение "Администратор системы" в поле Замечания Вы установить у пользователя не можете' });
+      }
     }
     const hashedPassword = await bcrypt.hash(userData.user.curPassword, 10);
     const userResult = await pool.query(
@@ -545,14 +653,18 @@ app.put('/api/user_put/:id',  authMiddleware, async (req, res) => {
   const { id } = req.params;
   const { userData } = req.body;
   const emailFromToken = req.userEmail;
-  if (!userData.user.first_name || !userData.user.last_name || !userData.user.email ||
-        !userData.user.phone_number || !userData.user.birthday || !userData.user.note ||
-        !userData.settings.limit_tasks || !userData.settings.pomodoro_duration || !userData.settings.start_working_day ||
-        !userData.settings.number_pomodoro_per_day || !userData.settings.rest_duration || !userData.settings.end_working_day) {
+  if (!userData || !userData.user || !userData.settings || !userData.matrix || !userData.status) {
+    return res.status(400).json({ error: 'Некорректная структура переданных данных' });
+  }
+  const isUserValid = validateUserData(userData.user, res);
+  if (isUserValid !== true) return;
+  const isValid = validateSettingsData(userData.settings, res);
+  if (isValid !== true) return;
+  if (!userData.user.note) {
       return res.status(400).json({ error: 'Все поля должны быть заполнены перед добавлением' });
   }
   for (const element of userData.matrix)
-      if (element.matrix_part <= 0 || !element.matrix_name || !element.description) {
+      if (!element.matrix_part || element.matrix_part <= 0 || !element.matrix_name || !element.description || !element.color) {
         return res.status(400).json({ error: 'Все поля должны быть заполнены перед добавлением' });
     } 
     for (const elem of userData.status)
@@ -563,11 +675,16 @@ app.put('/api/user_put/:id',  authMiddleware, async (req, res) => {
     await pool.query('BEGIN');
     const userExists = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
           if (userExists.rows.length === 0) {
+              await pool.query('ROLLBACK');
               return res.status(404).json({ error: 'Пользователь не найден' });
           }
     let updatedAdminUser = null;
     let user = null;
     const adminUser = await pool.query('SELECT * FROM users WHERE note = $1', ['Администратор системы']);
+    if (adminUser.rows.length === 0) {
+      await pool.query('ROLLBACK');
+      return res.status(404).json({ error: 'Главный администратор системы не найден в БД' });
+    }
     if (userData.user.note === 'Администратор системы') {
         if (emailFromToken === adminUser.rows[0].email) {
           if (id !== adminUser.rows[0].id)
@@ -575,13 +692,17 @@ app.put('/api/user_put/:id',  authMiddleware, async (req, res) => {
               const result = await pool.query('UPDATE users SET note = $1 WHERE id = $2 RETURNING *',
                 ['Недействующий администратор системы', adminUser.rows[0].id]);
               updatedAdminUser = result.rows[0];
-            } else 
+            } else {
+              await pool.query('ROLLBACK');
               return res.status(400).json({ error: 'Этот пользователь не является администратором, поэтому значение "Администратор системы" в поле Замечания для него недопустимы' });
-        } else
+        }} else {
+          await pool.query('ROLLBACK');
           return res.status(400).json({ error: 'Вы не являетесь главным администратором, поэтому значение "Администратор системы" в поле Замечания Вы установить у пользователя не можете' });
-        } else {
-      if (emailFromToken === adminUser.rows[0].email && Number(id) === adminUser.rows[0].id)
+        }} else {
+      if (emailFromToken === adminUser.rows[0].email && Number(id) === adminUser.rows[0].id) {
+        await pool.query('ROLLBACK');
         return res.status(400).json({ error: 'Вы являетесь главным администратором, поэтому, чтобы поменять значение "Администратор системы" в поле Замечания, Вы должны установить это значение другому администратору' });
+      }
     }
     if (userData.user.curPassword === '' || userData.user.curPassword === undefined) {
       const result = await pool.query('UPDATE users SET first_name = $1, last_name = $2, email = $3, password = $4, role_name = $5, birthday = $6, phone_number = $7, note = $8 WHERE id = $9 RETURNING *',
@@ -599,8 +720,10 @@ app.put('/api/user_put/:id',  authMiddleware, async (req, res) => {
       }
       else if (isMatch && (userData.user.newPassword !== '' && userData.user.newPassword !== undefined && userData.user.newPassword.length >= 6)) {
         const isMatchNew = await bcrypt.compare(userData.user.newPassword, userExists.rows[0].password);
-            if (isMatchNew)
+            if (isMatchNew) {
+                await pool.query('ROLLBACK');
                 return res.status(400).json({ error: 'Текущий и новый пароли не должны совпадать' });
+            }
         const hashedNewPassword = await bcrypt.hash(userData.user.newPassword, 10);
         const result = await pool.query('UPDATE users SET first_name = $1, last_name = $2, email = $3, password = $4, role_name = $5, birthday = $6, phone_number = $7, note = $8, last_password_change_date = CURRENT_TIMESTAMP WHERE id = $9 RETURNING *',
         [userData.user.first_name, userData.user.last_name, userData.user.email, hashedNewPassword, userData.user.role_name, 
@@ -609,9 +732,11 @@ app.put('/api/user_put/:id',  authMiddleware, async (req, res) => {
       }
       else {
           if ((userData.user.curPassword !== undefined && userData.user.curPassword.length < 6) || (userData.user.newPassword !== undefined && userData.user.newPassword.length < 6)) {
+              await pool.query('ROLLBACK');
               return res.status(400).json({ error: 'Пароль должен содержать минимум 6 символов' });
           }
           else {
+              await pool.query('ROLLBACK');
               return res.status(400).json({ error: 'Неверный пароль' });
           }
       }
@@ -648,8 +773,11 @@ app.get('/api/projects/:id', authMiddleware, async (req, res) => {
   const project_id = req.params.id;
   try {
     if (userRole === 'admin' && project_id !== '0') {
-      const res = await pool.query(`SELECT users.email from users LEFT JOIN projects ON projects.users_id = users.id WHERE projects.id = $1`, [project_id])
-      emailFromToken = res.rows[0].email;
+      const res1 = await pool.query(`SELECT users.email from users LEFT JOIN projects ON projects.users_id = users.id WHERE projects.id = $1`, [project_id])
+      if (res1.rows.length === 0) {
+        return res.status(404).json({ error: 'Пользователь не найден' });
+      }
+      emailFromToken = res1.rows[0].email;
     }
     let query;
     query = 'SELECT projects.* FROM projects LEFT JOIN users ON projects.users_id = users.id WHERE users.email = $1 ORDER BY created_at DESC';
@@ -663,12 +791,12 @@ app.get('/api/projects/:id', authMiddleware, async (req, res) => {
 app.post('/api/project_add/', authMiddleware, async (req, res) => {
   const { formData } = req.body;
   const emailFromToken = req.userEmail;
-  if (!formData.project_name || !formData.description) {
+  if (!formData.project_name || !formData.description || !formData.color || !formData.is_active) {
       return res.status(400).json({ error: 'Все поля должны быть заполнены перед добавлением' });
   }
   try {
     let users_id;
-    if (formData.users_id)
+    if (formData.users_id && req.userRole === 'admin')
       users_id = formData.users_id;
     else {
       const user = await pool.query(`SELECT id from users WHERE users.email = $1`, [emailFromToken]);
@@ -689,25 +817,23 @@ app.post('/api/project_add/', authMiddleware, async (req, res) => {
   }
 });
 app.delete('/api/project_delete/:id', authMiddleware, async (req, res) => {
+  const email = req.userEmail;
   const { id } = req.params;
   try {
     await pool.query('BEGIN');
-    const projectExists = await pool.query('SELECT * FROM projects WHERE id = $1', [id]);
+    const userExec = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (userExec.rows.length === 0) {
+      await pool.query('ROLLBACK');
+      return res.status(403).json({ error: 'Доступ запрещен' });
+    }
+    const projectExists = await pool.query('SELECT * FROM projects WHERE id = $1 AND users_id = $2', [id, userExec.rows[0].id]);
     if (projectExists.rows.length === 0) {
       await pool.query('ROLLBACK');
       return res.status(404).json({ error: 'Проект не найден' });
     }
-    const tasks = await pool.query('SELECT id FROM tasks WHERE project_id = $1', [id]);
-    const taskIds = tasks.rows.map(t => t.id);
-    if (taskIds.length > 0) {
-      await pool.query(`DELETE FROM dates_stages WHERE stage_id IN (SELECT id FROM stages WHERE task_id = ANY($1::int[]))`, [taskIds]);
-      await pool.query(`DELETE FROM stages WHERE task_id = ANY($1::int[])`, [taskIds]);
-      await pool.query(`DELETE FROM dates_tasks WHERE task_id = ANY($1::int[])`, [taskIds]);
-      await pool.query(`DELETE FROM tasks WHERE id = ANY($1::int[])`, [taskIds]);
-    }
     await pool.query('DELETE FROM projects WHERE id = $1', [id]);
     await pool.query('COMMIT');   
-      res.json({ message: 'Проект удален' });
+    res.json({ message: 'Проект удален' });
   } catch (err) {
     await pool.query('ROLLBACK');
     console.error(err);
@@ -716,6 +842,9 @@ app.delete('/api/project_delete/:id', authMiddleware, async (req, res) => {
 });
 app.get('/api/projects_with_users/', authMiddleware, async (req, res) => {
   try {
+    if (req.userRole !== 'admin') {
+      return res.status(403).json({ error: 'Доступ запрещен. Требуются права администратора.' });
+    }
     let query;
     query = 'SELECT projects.*, users.email FROM projects FULL JOIN users ON projects.users_id = users.id ORDER BY created_at DESC';
     const result = await pool.query(query);
@@ -731,12 +860,31 @@ app.get('/api/projects_with_users/', authMiddleware, async (req, res) => {
 app.put('/api/projects_put/:id',  authMiddleware, async (req, res) => {
   const { id } = req.params;
   const { formData } = req.body;
-  if (!formData.project_name || !formData.description) {
+  if (!formData.project_name || !formData.description || !formData.color || !formData.is_active) {
       return res.status(400).json({ error: 'Все поля должны быть заполнены перед добавлением' });
   }
   try {
+    let finalUsersId;
+    if (req.userRole === 'admin') {
+      const projectCheck = await pool.query('SELECT * FROM projects WHERE id = $1', [id]);
+      if (projectCheck.rows.length === 0) {
+          return res.status(404).json({ error: 'Проект не найден' });
+      }
+      finalUsersId = formData.users_id || projectCheck.rows[0].users_id;
+    }
+    else {
+        const userResult = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+        if (userResult.rows.length === 0) {
+            return res.status(403).json({ error: 'Доступ запрещен' });
+        }
+        finalUsersId = userResult.rows[0].id;
+        const projectCheck = await pool.query('SELECT id FROM projects WHERE id = $1 AND users_id = $2', [id, finalUsersId]);
+        if (projectCheck.rows.length === 0) {
+            return res.status(403).json({ error: 'У вас нет прав на изменение этого проекта или он не существует' });
+        }
+    }
       const result = await pool.query('UPDATE projects SET users_id = $1, project_name = $2, description = $3, color = $4, is_active = $5 WHERE id = $6 RETURNING *',
-      [formData.users_id, formData.project_name, formData.description, formData.color, formData.is_active, id]);
+      [finalUsersId, formData.project_name, formData.description, formData.color, formData.is_active, id]);
       res.json({ project: result.rows[0] });
   } catch (err) {
       console.error(err);
@@ -780,6 +928,10 @@ app.get('/api/tasks/:id', authMiddleware, async (req, res) => {
     const hasAccess = await checkProjectAccess(id, emailFromToken);
     if (role === 'user' && !hasAccess) {
         return res.status(403).json({ error: 'Нет доступа' });
+    }
+    const projectCheck = await pool.query('SELECT id FROM projects WHERE id = $1', [id]);
+    if (projectCheck.rows.length === 0) {
+        return res.status(404).json({ error: 'Указанный проект не найден в системе' });
     }
     let query;
     query = 'SELECT tasks.*, status.status_name, dates_tasks.execution_date, execution_status.exec_status_name, execution_status.code, execution_status.exec_color FROM dates_tasks LEFT JOIN tasks ON dates_tasks.task_id = tasks.id LEFT JOIN status ON tasks.status_id = status.id LEFT JOIN execution_status ON dates_tasks.exec_status_id = execution_status.id WHERE project_id = $1 AND status.system_code != \'завершение\' ORDER BY dates_tasks.execution_date';
@@ -954,118 +1106,134 @@ app.get('/api/execution_status/', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Ошибка при получении информации о статусах выполнения' });
   }
 });
-app.put('/api/task_put/:id',  authMiddleware, async (req, res) => {
+app.put('/api/task_put/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
-  const { value, field, isChangeDeadline} = req.body;
-  if (!value)
-      return res.status(400).json({ error: 'Значение поля должно быть заполнено перед добавлением' });
+  const email = req.userEmail;
+  const { value, field, isChangeDeadline } = req.body;
+  const allowedFields = ['project_id', 'task_name', 'description', 'status_id', 'matrix_id', 'deadline', 'pomodoros_planned', 'final_deadline', 'pomodoros_spent', 'created_at', 'repeat_type_id', 'number_repeat'];
+  if (!allowedFields.includes(field)) {
+      return res.status(400).json({ error: 'Недопустимое поле для изменения' });
+  }
+  if (!value) return res.status(400).json({ error: 'Значение поля должно быть заполнено' });
   try {
+      const taskAccess = await pool.query(
+          `SELECT tasks.id FROM tasks JOIN projects ON tasks.project_id = projects.id JOIN users ON projects.users_id = users.id WHERE tasks.id = $1 AND users.email = $2`, 
+          [id, email]
+      );
+      if (taskAccess.rows.length === 0) return res.status(403).json({ error: 'Доступ запрещен' });
       const result = await pool.query(`UPDATE tasks SET ${field} = $1 WHERE id = $2 RETURNING *`, [value, id]);
-      if (field === 'deadline' && isChangeDeadline)
-        await pool.query(`UPDATE stages SET ${field} = $1 WHERE task_id = $2 RETURNING *`, [value, id])
+      if (field === 'deadline' && isChangeDeadline) {
+          await pool.query(`UPDATE stages SET ${field} = $1 WHERE task_id = $2`, [value, id]);
+      }
       res.json({ project: result.rows[0] });
   } catch (err) {
       console.error(err);
-      if (err.message.includes('значение не умещается в тип'))
-        res.status(500).json({ error: 'Ошибка изменения пользователя: Введено слишком длинное значение' });
-      else 
-      res.status(500).json({ error: 'Ошибка изменения проекта' });
+      res.status(500).json({ error: 'Ошибка изменения задачи' });
   }
 });
-app.put('/api/dates_tasks_put_for_task/',  authMiddleware, async (req, res) => {
+app.put('/api/dates_tasks_put_for_task/', authMiddleware, async (req, res) => {
   const { formData } = req.body;
-  if (!formData.planned_start_time || !formData.planned_end_time) {
-      return res.status(400).json({ error: 'Значение поля должно быть заполнено перед добавлением' });
+  const email = req.userEmail;
+  if (!formData.planned_start_time || !formData.planned_end_time || !formData.dates_tasks_id) {
+      return res.status(400).json({ error: 'Все обязательные поля должны быть заполнены' });
   }
   try {
-    const status = await pool.query(`select * from execution_status where code = $1`, [formData.code])
-    const result = await pool.query(`UPDATE dates_tasks SET execution_date = $1, planned_start_time = $2, planned_end_time = $3, actual_start_time = $4, actual_end_time = $5, exec_status_id = $6 WHERE id = $7 RETURNING *`,
-      [formData.execution_date, formData.planned_start_time, formData.planned_end_time, formData.actual_start_time, formData.actual_end_time, status.rows[0].id, formData.dates_tasks_id]);
-      res.json({ dates_tasks: result.rows[0] });
+    const dateAccess = await pool.query(
+        `SELECT dt.id FROM dates_tasks dt JOIN tasks t ON dt.task_id = t.id JOIN projects p ON t.project_id = p.id JOIN users u ON p.users_id = u.id WHERE dt.id = $1 AND u.email = $2`,
+        [formData.dates_tasks_id, email]
+    );
+    if (dateAccess.rows.length === 0) return res.status(403).json({ error: 'Доступ запрещен' });
+    const status = await pool.query(`SELECT id FROM execution_status WHERE code = $1 LIMIT 1`, [formData.code]);
+    if (status.rows.length === 0) return res.status(400).json({ error: 'Статус выполнения не найден' });
+    const result = await pool.query(
+      `UPDATE dates_tasks SET execution_date = $1, planned_start_time = $2, planned_end_time = $3, actual_start_time = $4, actual_end_time = $5, exec_status_id = $6 WHERE id = $7 RETURNING *`,
+      [formData.execution_date, formData.planned_start_time, formData.planned_end_time, formData.actual_start_time, formData.actual_end_time, status.rows[0].id, formData.dates_tasks_id]
+    );
+    res.json({ dates_tasks: result.rows[0] });
   } catch (err) {
       console.error(err); 
-      res.status(500).json({ error: 'Ошибка изменения проекта' });
+      res.status(500).json({ error: 'Ошибка изменения интервала задачи' });
   }
 });
 app.put('/api/update_repeat_type/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
+  const email = req.userEmail;
   const { repeat_type_id, number_repeat, execution_date, newDates, planned_start_time, planned_end_time } = req.body;
   try {
+    const taskAccess = await pool.query(
+        `SELECT tasks.id FROM tasks JOIN projects ON tasks.project_id = projects.id JOIN users ON projects.users_id = users.id WHERE tasks.id = $1 AND users.email = $2`, 
+        [id, email]
+    );
+    if (taskAccess.rows.length === 0) return res.status(403).json({ error: 'Доступ запрещен' });
     await pool.query('BEGIN');
-    const result = await pool.query(`UPDATE tasks SET repeat_type_id = $1, number_repeat = $2 WHERE id = $3 RETURNING *`,
-      [repeat_type_id, number_repeat, id]);  
-    const exec_status = await pool.query(`SELECT * FROM execution_status`)
+    const result = await pool.query(`UPDATE tasks SET repeat_type_id = $1, number_repeat = $2 WHERE id = $3 RETURNING *`, [repeat_type_id, number_repeat, id]);  
+    const exec_status = await pool.query(`SELECT id, code FROM execution_status`);
     const findExecStatusIdByCode = (code) => {
       const st = exec_status.rows.find(s => s.code === code);
       return st ? st.id : null;
     };
-    const deletedDates = await pool.query(`DELETE FROM dates_tasks 
-       WHERE task_id = $1 AND ((execution_date > $2)) AND exec_status_id != $3 AND exec_status_id != $4
-       RETURNING id, execution_date`, 
-       [id, execution_date, findExecStatusIdByCode('выполнение'), findExecStatusIdByCode('работа')]);
+    const deletedDates = await pool.query(
+       `DELETE FROM dates_tasks WHERE task_id = $1 AND execution_date > $2 AND exec_status_id != $3 AND exec_status_id != $4 RETURNING execution_date`, 
+       [id, execution_date, findExecStatusIdByCode('выполнение'), findExecStatusIdByCode('работа')]
+    );
     if (deletedDates.rows.length > 0) {
       const deletedDateStrings = deletedDates.rows.map(d => d.execution_date);
-      await pool.query(`DELETE FROM dates_stages WHERE stage_id IN (SELECT id FROM stages WHERE task_id = $1) AND execution_date = ANY($2::date[])`,
-        [id, deletedDateStrings]);
+      await pool.query(`DELETE FROM dates_stages WHERE stage_id IN (SELECT id FROM stages WHERE task_id = $1) AND execution_date = ANY($2::date[])`, [id, deletedDateStrings]);
     }
     const existingResult = await pool.query(`SELECT execution_date FROM dates_tasks WHERE task_id = $1`, [id]);
     const existingSet = new Set(
       existingResult.rows.map(row => {
         const date = new Date(row.execution_date);
-        const year = date.getFullYear();
-        const month = String(date.getMonth() + 1).padStart(2, '0');
-        const day = String(date.getDate()).padStart(2, '0');
-        return `${year}-${month}-${day}`;
+        return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
       })
     );
     const stages = await pool.query(`SELECT id FROM stages WHERE task_id = $1`, [id]);
-    for (let i = 0; i < newDates.length; i++) {
-      const date = newDates[i];
-      if (existingSet.has(date))
-        continue;
-      try {
-        await pool.query(`INSERT INTO dates_tasks (task_id, execution_date, planned_start_time, planned_end_time, 
-            actual_start_time, actual_end_time, exec_status_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-          [id, date, planned_start_time, planned_end_time, '00:00:00', '00:00:00', findExecStatusIdByCode('ожидание')]);
-        if (stages.rows.length > 0) {
-          for (const stage of stages.rows)
-            await pool.query(`INSERT INTO dates_stages (stage_id, execution_date, planned_start_time, planned_end_time, 
-                actual_start_time, actual_end_time, exec_status_id) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-              [stage.id, date, planned_start_time, planned_end_time, '00:00:00', '00:00:00', findExecStatusIdByCode('ожидание')]);
-        }       
-      } catch (err) {
-        await pool.query('ROLLBACK');
-        console.error(err);
-        res.status(500).json({ error: 'Ошибка при вставке даты' });
-      }
+    for (const date of newDates) {
+      if (existingSet.has(date)) continue;
+      await pool.query(
+        `INSERT INTO dates_tasks (task_id, execution_date, planned_start_time, planned_end_time, actual_start_time, actual_end_time, exec_status_id) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [id, date, planned_start_time, planned_end_time, '00:00:00', '00:00:00', findExecStatusIdByCode('ожидание')]
+      );
+      if (stages.rows.length > 0) {
+        for (const stage of stages.rows) {
+          await pool.query(
+            `INSERT INTO dates_stages (stage_id, execution_date, planned_start_time, planned_end_time, actual_start_time, actual_end_time, exec_status_id) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [stage.id, date, planned_start_time, planned_end_time, '00:00:00', '00:00:00', findExecStatusIdByCode('ожидание')]
+          );
+        }
+      }       
     }
-    const finalCheck = await pool.query(`SELECT * FROM dates_tasks WHERE task_id = $1 AND exec_status_id != $2`,
-      [id, findExecStatusIdByCode('выполнение')]);
+    const finalCheck = await pool.query(`SELECT id FROM dates_tasks WHERE task_id = $1 AND exec_status_id != $2`, [id, findExecStatusIdByCode('выполнение')]);
     if (finalCheck.rows.length === 0) {
       await pool.query('ROLLBACK');
-      return res.status(400).json({ error: 'Вы не можете установить такие значения даты и типа повторения, потому что в таком случае у задачи не будет незавершенных записей (все записи (сроки) имеют статус Выполнено)'});
+      return res.status(400).json({ error: 'Вы не можете установить такие значения: у задачи не останется незавершенных интервалов.'});
     }
     await pool.query('COMMIT');
     res.json({ deleted: result.rows });
   } catch (err) {
     await pool.query('ROLLBACK');
     console.error(err);
-    res.status(500).json({ error: 'Ошибка удаления дат' });
+    res.status(500).json({ error: 'Ошибка пересчета календаря повторений' });
   }
 });
 app.put('/api/repeat_type_table_put/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
   const { type_name, description } = req.body;
+  if (req.userRole !== 'admin') {
+    return res.status(403).json({ error: 'Доступ запрещен. Требуются права администратора.' });
+  }
   try {
     const result = await pool.query(`UPDATE repeat_types SET type_name = $1, description = $2 WHERE id = $3 RETURNING *`,[type_name, description, id]);
     res.json({ res: result.rows });
-
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Ошибка изменения типов повторений' });
   }
 });
 app.put('/api/execution_status_table_put/:id', authMiddleware, async (req, res) => {
+  if (req.userRole !== 'admin') {
+    return res.status(403).json({ error: 'Доступ запрещен. Требуются права администратора.' });
+  }
   const { id } = req.params;
   const { exec_status_name, color } = req.body;
   try {
@@ -1104,7 +1272,19 @@ app.put('/api/execution_status_put_overdue', authMiddleware, async (req, res) =>
 });
 app.get('/api/dates_tasks_for_task/:id', authMiddleware, async (req, res) => {
   try {
-    const { id } = req.params;
+    const { id } = req.params;  
+    const emailFromToken = req.userEmail;
+    if (req.userRole !== 'admin') {
+      const taskAccess = await pool.query(`
+        SELECT tasks.id FROM tasks 
+        JOIN projects ON tasks.project_id = projects.id
+        JOIN users ON projects.users_id = users.id 
+        WHERE tasks.id = $1 AND users.email = $2`, [id, emailFromToken]
+      );
+      if (taskAccess.rows.length === 0) {
+        return res.status(403).json({ error: 'Нет доступа к этой задаче или она не существует' });
+      }
+    }
     let query;
     query = `SELECT dates_tasks.*, execution_status.exec_status_name, execution_status.code, execution_status.exec_color FROM dates_tasks LEFT JOIN execution_status ON dates_tasks.exec_status_id = execution_status.id WHERE task_id = $1 AND execution_status.code != 'выполнение'`;
     const result = await pool.query(query, [id]);
@@ -1117,6 +1297,15 @@ app.get('/api/dates_tasks_for_task/:id', authMiddleware, async (req, res) => {
 app.get('/api/info_dates_tasks/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
+    const emailFromToken = req.userEmail;
+    if (req.userRole !== 'admin') {
+      const taskAccess = await pool.query(`
+        SELECT tasks.id FROM tasks JOIN projects ON tasks.project_id = projects.id
+        JOIN users ON projects.users_id = users.id WHERE tasks.id = $1 AND users.email = $2`, [id, emailFromToken]);
+      if (taskAccess.rows.length === 0) {
+        return res.status(403).json({ error: 'Нет доступа к данным этой задачи' });
+      }
+    }
     const result = await pool.query('SELECT dates_tasks.*, execution_status.exec_status_name, execution_status.code, execution_status.exec_color FROM dates_tasks LEFT JOIN execution_status ON dates_tasks.exec_status_id = execution_status.id WHERE task_id = $1 ORDER BY execution_date', [id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Сроки задачи не найдены' });
@@ -1130,6 +1319,17 @@ app.get('/api/info_dates_tasks/:id', authMiddleware, async (req, res) => {
 app.get('/api/info_dates_stages/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
+    const emailFromToken = req.userEmail;
+    if (req.userRole !== 'admin') {
+      const stageAccess = await pool.query(`
+        SELECT stages.id FROM stages 
+        JOIN tasks ON stages.task_id = tasks.id JOIN projects ON tasks.project_id = projects.id
+        JOIN users ON projects.users_id = users.id 
+        WHERE stages.id = $1 AND users.email = $2`, [id, emailFromToken]);
+      if (stageAccess.rows.length === 0) {
+        return res.status(403).json({ error: 'Нет доступа к данным этого этапа' });
+      }
+    }
     const result = await pool.query('SELECT dates_stages.*, execution_status.exec_status_name, execution_status.code, execution_status.exec_color FROM dates_stages LEFT JOIN execution_status ON dates_stages.exec_status_id = execution_status.id WHERE stage_id = $1 ORDER BY execution_date', [id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Сроки этапа не найдены' });
@@ -1144,22 +1344,34 @@ app.post('/api/task_add/', authMiddleware, async (req, res) => {
   const { id, formData } = req.body;
   let emailFromToken = req.userEmail;
   const userRole = req.userRole;
-  if (!formData.task_name || !formData.description || !formData.deadline) {
+  if (!formData || !formData.task_name || !formData.description || !formData.deadline) {
       return res.status(400).json({ error: 'Все поля должны быть заполнены перед добавлением' });
   }
-  if (userRole === 'admin') {
-    const res = await pool.query(`SELECT users.email from users LEFT JOIN projects ON projects.users_id = users.id WHERE projects.id = $1`, [id])
-    emailFromToken = res.rows[0].email;
-  }
-  const today = new Date();
-  const date = new Date(formData.deadline);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
   try {
+    const today = new Date();
+    const date = new Date(formData.deadline);
+    if (isNaN(date.getTime())) {
+        return res.status(400).json({ error: 'Некорректный формат даты дедлайна' });
+    }
+    if (userRole === 'admin') {
+      const res1 = await pool.query(`SELECT users.email from users LEFT JOIN projects ON projects.users_id = users.id WHERE projects.id = $1`, [id])
+      if (res1.rows.length === 0) {
+        return res.status(404).json({ error: 'Пользователь не найден' });
+      }
+      emailFromToken = res1.rows[0].email;
+    } 
+    else {
+      const hasAccess = await checkProjectAccess(id, emailFromToken);
+      if (!hasAccess) {
+        return res.status(403).json({ error: 'У вас нет доступа к этому проекту для создания задач' });
+      }
+    }
     await pool.query('BEGIN');
-    const user = await pool.query(`SELECT status.id from status LEFT JOIN users ON status.users_id = users.id WHERE users.email = $1 ORDER BY status.id`, [emailFromToken])
-    const time = await pool.query(`SELECT settings.start_working_day, settings.end_working_day from settings LEFT JOIN users ON users.id = settings.users_id WHERE users.email = $1`, [emailFromToken])
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const user = await pool.query(`SELECT status.id from status LEFT JOIN users ON status.users_id = users.id WHERE users.email = $1 ORDER BY status.id LIMIT 1`, [emailFromToken]);
+    const time = await pool.query(`SELECT settings.start_working_day, settings.end_working_day from settings LEFT JOIN users ON users.id = settings.users_id WHERE users.email = $1`, [emailFromToken]);
     if (user.rows.length === 0)  {
       await pool.query('ROLLBACK');
       return res.status(400).json({ error: 'Ошибка получения данных о статусе пользователя' });
@@ -1173,11 +1385,15 @@ app.post('/api/task_add/', authMiddleware, async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $6, -1, '1900-01-01', 0, $7, 1, '{0}') RETURNING id`,
       [id, formData.task_name, formData.description, user.rows[0].id, Number(formData.matrix_id), new Date(`${year}-${month}-${day}`), today]
     );
-    const status = await pool.query(`select * from execution_status where code = $1`, ['ожидание'])
+    const status = await pool.query(`select id from execution_status where code = $1 LIMIT 1`, ['ожидание']);
+    if (status.rows.length === 0) {
+        await pool.query('ROLLBACK');
+        return res.status(500).json({ error: 'Системный статус ожидания не найден' });
+    }
     await pool.query(
-      `INSERT INTO dates_tasks (task_id, execution_date,  planned_start_time, planned_end_time, actual_start_time, actual_end_time, exec_status_id) 
-       VALUES ($1, $2, $3, $4, '00:00:00', '00:00:00', $5) RETURNING id`,
-      [result.rows[0].id, `${year}-${month}-${day}`,  time.rows[0].start_working_day, time.rows[0].end_working_day, status.rows[0].id]
+      `INSERT INTO dates_tasks (task_id, execution_date, planned_start_time, planned_end_time, actual_start_time, actual_end_time, exec_status_id) 
+       VALUES ($1, $2, $3, $4, '00:00:00', '00:00:00', $5)`,
+      [result.rows[0].id, `${year}-${month}-${day}`, time.rows[0].start_working_day, time.rows[0].end_working_day, status.rows[0].id]
     );
     await pool.query('COMMIT');
     res.json(result.rows[0]);
@@ -1196,26 +1412,43 @@ app.put('/api/status_put_for_task/:id', authMiddleware, async (req, res) => {
   let emailFromToken = req.userEmail;
   const userRole = req.userRole;
   if (!status) {
-    return res.status(400).json({ error: 'Все поля должны быть заполнены перед добавлением' });
+    return res.status(400).json({ error: 'Все поля должны быть заполнены' });
   }  
   try {
+    if (userRole !== 'admin') {
+      const accessCheck = await pool.query(
+        `SELECT tasks.id FROM tasks JOIN projects ON tasks.project_id = projects.id JOIN users ON projects.users_id = users.id WHERE tasks.id = $1 AND users.email = $2`,
+        [id, emailFromToken]
+      );
+      if (accessCheck.rows.length === 0) {
+        return res.status(403).json({ error: 'Нет доступа к этой задаче или она не существует' });
+      }
+    }
     await pool.query('BEGIN');
     if (userRole === 'admin') {
-      const res = await pool.query(`SELECT users.email from users LEFT JOIN projects ON projects.users_id = users.id LEFT JOIN tasks ON projects.id = tasks.project_id WHERE tasks.id = $1`, [id])
-      emailFromToken = res.rows[0].email;
+      const res1 = await pool.query(
+        `SELECT users.email from users LEFT JOIN projects ON projects.users_id = users.id LEFT JOIN tasks ON projects.id = tasks.project_id WHERE tasks.id = $1`, 
+        [id]
+      );
+      if (res1.rows.length === 0) {
+         await pool.query('ROLLBACK');
+         return res.status(404).json({ error: 'Владелец задачи не найден' });
+      }
+      emailFromToken = res1.rows[0].email;
     }
-    const user = await pool.query(`SELECT status.id from status LEFT JOIN users ON status.users_id = users.id WHERE users.email = $1 AND status.system_code = $2 ORDER BY status.id`, [emailFromToken, status])
-    const result = await pool.query(`UPDATE tasks SET status_id = $1 WHERE id = $2 RETURNING *`, [user.rows[0].id, id]);
+    const userStatusQuery = await pool.query(`SELECT status.id from status LEFT JOIN users ON status.users_id = users.id WHERE users.email = $1 AND status.system_code = $2 ORDER BY status.id LIMIT 1`, [emailFromToken, status]);
+    if (userStatusQuery.rows.length === 0) {
+        await pool.query('ROLLBACK');
+        return res.status(400).json({ error: 'Указанный статус не настроен в профиле пользователя' });
+    }
+    const result = await pool.query(`UPDATE tasks SET status_id = $1 WHERE id = $2 RETURNING *`, [userStatusQuery.rows[0].id, id]);
     if (result.rows.length === 0) {
       await pool.query('ROLLBACK');
       return res.status(404).json({ error: 'Задача не найдена' });
     }
     if (status === 'завершение') {
       const today = new Date();
-      const year = today.getFullYear();
-      const month = String(today.getMonth() + 1).padStart(2, '0');
-      const day = String(today.getDate()).padStart(2, '0');
-      const finalDeadline = `${year}-${month}-${day}`;
+      const finalDeadline = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
       await pool.query(`UPDATE tasks SET final_deadline = $1 WHERE id = $2`, [finalDeadline, id]);
       await pool.query(`UPDATE stages SET final_deadline = $1 WHERE task_id = $2`, [finalDeadline, id]);    
     }
@@ -1224,15 +1457,24 @@ app.put('/api/status_put_for_task/:id', authMiddleware, async (req, res) => {
   } catch (err) {
     await pool.query('ROLLBACK');
     console.error(err);
-    res.status(500).json({ error: 'Ошибка изменения типов повторений' });
+    res.status(500).json({ error: 'Ошибка изменения статуса задачи' });
   }
 });
 app.get('/api/tasks_name/', authMiddleware, async (req, res) => {
   const emailFromToken = req.userEmail;
   try {
-    const result = await pool.query('SELECT tasks.*, projects.color FROM tasks LEFT JOIN projects ON projects.id = tasks.project_id LEFT JOIN users ON projects.users_id = users.id LEFT JOIN status ON tasks.status_id = status.id LEFT JOIN dates_tasks ON dates_tasks.task_id = tasks.id WHERE users.email = $1 AND status.system_code = $2 AND dates_tasks.id IS NOT NULL GROUP BY tasks.id, projects.color', [emailFromToken, 'работа']);
+    const query = `
+      SELECT DISTINCT tasks.*, projects.color 
+      FROM tasks 
+      LEFT JOIN projects ON projects.id = tasks.project_id 
+      LEFT JOIN users ON projects.users_id = users.id 
+      LEFT JOIN status ON tasks.status_id = status.id 
+      LEFT JOIN dates_tasks ON dates_tasks.task_id = tasks.id 
+      WHERE users.email = $1 AND status.system_code = $2 AND dates_tasks.id IS NOT NULL
+    `;
+    const result = await pool.query(query, [emailFromToken, 'работа']);
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Задачи не найдены' });
+      return res.status(404).json({ error: 'Задачи в статусе "В работе" не найдены' });
     }
     res.json(result.rows);
   } catch (err) {
@@ -1246,18 +1488,26 @@ app.post('/api/pomodoro_add/', async (req, res) => {
     const decoded = jwt.verify(req.headers.authorization?.split(' ')[1], process.env.JWT_SECRET, { ignoreExpiration: true });
     userEmail = decoded.email;
   } catch (error) {
-    return res.status(401).json({ error: 'Неверный токен' });
+    return res.status(401).json({ error: 'Неверный токен сессии' });
   }
   const { task_id, stage_id, pomodoro_date, start_time, end_time, duration, was_interrupted } = req.body;
-  const result = await pool.query('SELECT id FROM users WHERE email = $1', [userEmail]);
-  const users_id = result.rows[0]?.id;
   if ((!task_id && task_id != 0) || (!stage_id && stage_id != 0) || !pomodoro_date || !start_time || !end_time || !duration) {
-    return res.status(400).json({ error: 'Все поля должны быть заполнены перед добавлением' });
+    return res.status(400).json({ error: 'Все обязательные поля таймера должны быть заполнены' });
   }
   try { 
+    const userResult = await pool.query('SELECT id FROM users WHERE email = $1', [userEmail]);
+    if (userResult.rows.length === 0) return res.status(404).json({ error: 'Пользователь не найден' });
+    const users_id = userResult.rows[0].id;
+    if (task_id !== 0) {
+       const taskCheck = await pool.query(`SELECT t.id FROM tasks t JOIN projects p ON t.project_id = p.id WHERE t.id = $1 AND p.users_id = $2`, [task_id, users_id]);
+       if (taskCheck.rows.length === 0) return res.status(403).json({ error: 'Доступ запрещен к указанной задаче' });
+    }
     await pool.query('BEGIN');
-    const result = await pool.query(`INSERT INTO pomodoro (task_id, stage_id, pomodoro_date, start_time, end_time, duration, was_interrupted, users_id) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`, [task_id, stage_id, pomodoro_date, start_time, end_time, duration, was_interrupted, users_id]);
+    const result = await pool.query(
+       `INSERT INTO pomodoro (task_id, stage_id, pomodoro_date, start_time, end_time, duration, was_interrupted, users_id) 
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`, 
+       [task_id, stage_id, pomodoro_date, start_time, end_time, duration, was_interrupted, users_id]
+    );
     if (task_id === 0) {
       await pool.query('COMMIT');
       return res.json(result.rows[0]);      
@@ -1266,24 +1516,24 @@ app.post('/api/pomodoro_add/', async (req, res) => {
         const count = await pool.query('SELECT pomodoros_spent FROM tasks WHERE id = $1', [task_id]);
         if (count.rows.length === 0) {
           await pool.query('ROLLBACK');
-          return res.status(400).json({ error: 'Ошибка получения количества помидоров' });
+          return res.status(400).json({ error: 'Ошибка получения количества помидоров задачи' });
         }
-        await pool.query(`UPDATE tasks SET pomodoros_spent = $1 WHERE id = $2`,[count.rows[0].pomodoros_spent + 1, task_id]);
+        await pool.query(`UPDATE tasks SET pomodoros_spent = $1 WHERE id = $2`, [count.rows[0].pomodoros_spent + 1, task_id]);
         await pool.query('COMMIT');
-        res.json(result.rows[0]);       
+        return res.json(result.rows[0]);       
     }
-        const count = await pool.query('SELECT pomodoros_spent FROM stages WHERE id = $1', [stage_id]);
-        if (count.rows.length === 0) {
-          await pool.query('ROLLBACK');
-          return res.status(400).json({ error: 'Ошибка получения количества помидоров этапа' });
-        }
-        await pool.query(`UPDATE stages SET pomodoros_spent = $1 WHERE id = $2`,[count.rows[0].pomodoros_spent + 1, stage_id]);
-        await pool.query('COMMIT');
-        res.json(result.rows[0]);    
+    const count = await pool.query('SELECT pomodoros_spent FROM stages WHERE id = $1', [stage_id]);
+    if (count.rows.length === 0) {
+      await pool.query('ROLLBACK');
+      return res.status(400).json({ error: 'Ошибка получения количества помидоров этапа' });
+    }
+    await pool.query(`UPDATE stages SET pomodoros_spent = $1 WHERE id = $2`, [count.rows[0].pomodoros_spent + 1, stage_id]);
+    await pool.query('COMMIT');
+    res.json(result.rows[0]);    
   } catch (err) {
     await pool.query('ROLLBACK');
-      console.error(err);
-      res.status(500).json({ error: 'Ошибка добавления помодоро' });
+    console.error(err);
+    res.status(500).json({ error: 'Ошибка добавления сессии помодоро' });
   }
 });
 app.get('/api/pomodoro', authMiddleware, async (req, res) => {
@@ -1329,40 +1579,55 @@ app.get('/api/stages/:id', authMiddleware, async (req, res) => {
   }
 });
 app.post('/api/stage_add/', authMiddleware, async (req, res) => {
-  const { id, formData } = req.body;
-  if (!formData.stage_name || !formData.description) {
+  const { id, formData } = req.body; // id — это task_id родительской задачи
+  const emailFromToken = req.userEmail;
+  const userRole = req.userRole;
+  if (!formData || !formData.stage_name || !formData.description) {
     return res.status(400).json({ error: 'Все поля должны быть заполнены перед добавлением' });
   }
-  const date = new Date();
+  const currentDate = new Date();
   try {
-    await pool.query('BEGIN');
-    const number = await pool.query(`SELECT MAX(order_stage_in_list) as max_count FROM stages WHERE task_id = $1`, [id])
+    if (userRole !== 'admin') {
+      const taskAccess = await pool.query(`
+        SELECT tasks.id FROM tasks 
+        JOIN projects ON tasks.project_id = projects.id
+        JOIN users ON projects.users_id = users.id 
+        WHERE tasks.id = $1 AND users.email = $2`, [id, emailFromToken]
+      );
+      if (taskAccess.rows.length === 0) {
+        return res.status(403).json({ error: 'Нет доступа к этой задаче или она не существует' });
+      }
+    }
+    const task = await pool.query(`SELECT * FROM tasks WHERE id = $1`, [id]);
+    if (task.rows.length === 0) {
+      return res.status(404).json({ error: 'Задача не найдена' });
+    }     
+    const dates = await pool.query(`SELECT * FROM dates_tasks WHERE task_id = $1 ORDER BY execution_date`, [id]);
+    if (dates.rows.length === 0) {
+      return res.status(400).json({ error: 'Не найдены календарные сроки для родительской задачи. Сначала распределите задачу в календаре.' });
+    }
+    const number = await pool.query(`SELECT MAX(order_stage_in_list) as max_count FROM stages WHERE task_id = $1`, [id]);
     let count = 1;
     if (number.rows.length > 0 && number.rows[0].max_count !== null) {
       count = Number(number.rows[0].max_count) + 1;
     }   
-    const task = await pool.query(`SELECT * FROM tasks WHERE id = $1`, [id])
-    if (task.rows.length === 0){
-      await pool.query('ROLLBACK');
-      return res.status(400).json({ error: 'Задача не найдена' });
-    }     
-    const dates = await pool.query(`SELECT * FROM dates_tasks WHERE task_id = $1 ORDER BY execution_date`, [id])
-    if (dates.rows.length === 0) {
-      await pool.query('ROLLBACK');
-      return res.status(400).json({ error: 'Не найдены даты выполнения для задачи' });
+    const status = await pool.query(`SELECT id FROM execution_status WHERE code = $1 LIMIT 1`, ['ожидание']);
+    if (status.rows.length === 0) {
+      return res.status(500).json({ error: 'Системный статус ожидания не настроен' });
     }
-      const result = await pool.query(
-        `INSERT INTO stages (task_id, stage_name, description, deadline, pomodoros_planned, final_deadline, pomodoros_spent, created_at, order_stage_in_list) 
-         VALUES ($1, $2, $3, $4, -1, '1900-01-01', 0, $5, $6) RETURNING id`,
-        [id, formData.stage_name, formData.description, task.rows[0].deadline, date, count]
-      );
-      const status = await pool.query(`select * from execution_status where code = $1`, ['ожидание'])
-    for (const date of dates.rows)
+    await pool.query('BEGIN');
+    const result = await pool.query(
+      `INSERT INTO stages (task_id, stage_name, description, deadline, pomodoros_planned, final_deadline, pomodoros_spent, created_at, order_stage_in_list) 
+       VALUES ($1, $2, $3, $4, -1, '1900-01-01', 0, $5, $6) RETURNING id`,
+      [id, formData.stage_name, formData.description, task.rows[0].deadline, currentDate, count]
+    );
+    for (const taskDate of dates.rows) {
       await pool.query(
-        `INSERT INTO dates_stages (stage_id, execution_date,  planned_start_time, planned_end_time, actual_start_time, actual_end_time, exec_status_id) 
-        VALUES ($1, $2, $3, $4, '00:00:00', '00:00:00', $5) RETURNING id`,
-        [result.rows[0].id, date.execution_date, date.planned_start_time, date.planned_end_time, status.rows[0].id]
+        `INSERT INTO dates_stages (stage_id, execution_date, planned_start_time, planned_end_time, actual_start_time, actual_end_time, exec_status_id) 
+         VALUES ($1, $2, $3, $4, '00:00:00', '00:00:00', $5)`,
+        [result.rows[0].id, taskDate.execution_date, taskDate.planned_start_time, taskDate.planned_end_time, status.rows[0].id]
       );
+    }
     await pool.query('COMMIT');
     res.json(result.rows[0]);
   } catch (err) {
@@ -1376,7 +1641,26 @@ app.post('/api/stage_add/', authMiddleware, async (req, res) => {
 });
 app.put('/api/stage_order_put/', authMiddleware, async (req, res) => {
   const { stages } = req.body;
+  const emailFromToken = req.userEmail;
+  const role = req.userRole;
+  if (!stages || !Array.isArray(stages) || stages.length === 0) {
+    return res.status(400).json({ error: 'Некорректная структура данных' });
+  }
   try {
+    if (role !== 'admin') {
+      const stageIds = stages.map(s => s.id);
+      const accessCheck = await pool.query(`
+        SELECT COUNT(stages.id) as count FROM stages 
+        JOIN tasks ON stages.task_id = tasks.id
+        JOIN projects ON tasks.project_id = projects.id
+        JOIN users ON projects.users_id = users.id
+        WHERE stages.id = ANY($1::int[]) AND users.email = $2`, 
+        [stageIds, emailFromToken]
+      );
+      if (Number(accessCheck.rows[0].count) !== stages.length) {
+        return res.status(403).json({ error: 'Доступ запрещен. В запросе присутствуют чужие данные.' });
+      }
+    }
     await pool.query('BEGIN');
     for (const stage of stages) {
       await pool.query(
@@ -1389,7 +1673,7 @@ app.put('/api/stage_order_put/', authMiddleware, async (req, res) => {
   } catch (err) {
     await pool.query('ROLLBACK');
     console.error(err);
-    res.status(500).json({ error: 'Ошибка изменения типов повторений' });
+    res.status(500).json({ error: 'Ошибка изменения порядка этапов' });
   }
 });
 app.get('/api/info_stage/:id', authMiddleware, async (req, res) => {
@@ -1437,36 +1721,71 @@ app.get('/api/info_stage/:id', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Ошибка при получении информации об этапе' });
   }
 });
-app.put('/api/stage_put/:id',  authMiddleware, async (req, res) => {
+app.put('/api/stage_put/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
   const { value, field } = req.body;
+  const emailFromToken = req.userEmail;
+  const role = req.userRole;
+  const allowedFields = ['task_id', 'stage_name', 'description', 'deadline', 'pomodoros_planned', 'final_deadline', 'pomodoros_spent', 'order_stage_in_list'];
+  if (!allowedFields.includes(field)) {
+      return res.status(400).json({ error: 'Недопустимое поле для изменения' });
+  }
   if (!value) {
-      return res.status(400).json({ error: 'Значение поля должно быть заполнено перед добавлением' });
+      return res.status(400).json({ error: 'Значение поля должно быть заполнено перед изменением' });
   }
   try {
+      if (role !== 'admin') {
+          const stageAccess = await pool.query(`
+             SELECT stages.id FROM stages 
+             JOIN tasks ON stages.task_id = tasks.id
+             JOIN projects ON tasks.project_id = projects.id 
+             JOIN users ON projects.users_id = users.id
+             WHERE stages.id = $1 AND users.email = $2`, [id, emailFromToken]
+          );
+          if (stageAccess.rows.length === 0) {
+              return res.status(403).json({ error: 'У вас нет прав на редактирование этого этапа' });
+          }
+      }
       const result = await pool.query(`UPDATE stages SET ${field} = $1 WHERE id = $2 RETURNING *`, [value, id]);
       res.json({ stage: result.rows[0] });
   } catch (err) {
       console.error(err);
       if (err.message.includes('значение не умещается в тип'))
-        res.status(500).json({ error: 'Ошибка изменения: Введено слишком длинное значение' });
+          res.status(500).json({ error: 'Ошибка изменения: Введено слишком длинное значение' });
       else 
-      res.status(500).json({ error: 'Ошибка изменения этапа' });
+          res.status(500).json({ error: 'Ошибка изменения этапа' });
   }
 });
-app.put('/api/dates_stages_put_for_stage/',  authMiddleware, async (req, res) => {
+app.put('/api/dates_stages_put_for_stage/', authMiddleware, async (req, res) => {
   const { formData } = req.body;
-  if (!formData.planned_start_time || !formData.planned_end_time) {
-      return res.status(400).json({ error: 'Значение поля должно быть заполнено перед добавлением' });
+  const emailFromToken = req.userEmail;
+  const role = req.userRole;
+  if (!formData || !formData.planned_start_time || !formData.planned_end_time || !formData.dates_stages_id) {
+      return res.status(400).json({ error: 'Значение поля должно быть заполнено перед изменением' });
   }
   try {
-    const exec_status = await pool.query(`SELECT * FROM execution_status`)
-      const findExecStatusIdByCode = (code) => {
-        const st = exec_status.rows.find(s => s.code === code);
-        return st ? st.id : null;
-      };
-    const result = await pool.query(`UPDATE dates_stages SET execution_date = $1, planned_start_time = $2, planned_end_time = $3, actual_start_time = $4, actual_end_time = $5, exec_status_id = $6 WHERE id = $7 RETURNING *`,
-      [formData.execution_date, formData.planned_start_time, formData.planned_end_time, formData.actual_start_time, formData.actual_end_time, findExecStatusIdByCode(formData.stage_code), formData.dates_stages_id]);
+    if (role !== 'admin') {
+      const accessCheck = await pool.query(`
+        SELECT ds.id FROM dates_stages ds 
+        JOIN stages s ON ds.stage_id = s.id
+        JOIN tasks t ON s.task_id = t.id
+        JOIN projects p ON t.project_id = p.id
+        JOIN users u ON p.users_id = u.id
+        WHERE ds.id = $1 AND u.email = $2`, [formData.dates_stages_id, emailFromToken]
+      );
+      if (accessCheck.rows.length === 0) {
+        return res.status(403).json({ error: 'Нет доступа к изменению этого срока' });
+      }
+    }
+    const exec_status = await pool.query(`SELECT id, code FROM execution_status`);
+    const findExecStatusIdByCode = (code) => {
+      const st = exec_status.rows.find(s => s.code === code);
+      return st ? st.id : null;
+    };
+    const result = await pool.query(
+      `UPDATE dates_stages SET execution_date = $1, planned_start_time = $2, planned_end_time = $3, actual_start_time = $4, actual_end_time = $5, exec_status_id = $6 WHERE id = $7 RETURNING *`,
+      [formData.execution_date, formData.planned_start_time, formData.planned_end_time, formData.actual_start_time, formData.actual_end_time, findExecStatusIdByCode(formData.stage_code), formData.dates_stages_id]
+    );
     if (result.rows.length === 0)
       return res.status(400).json({ error: 'Ошибка изменения срока этапа' });
     res.json(result.rows[0]);
@@ -1478,105 +1797,109 @@ app.put('/api/dates_stages_put_for_stage/',  authMiddleware, async (req, res) =>
 app.post('/api/task_copy/', authMiddleware, async (req, res) => {
   const { project_id, taskId } = req.body;
   const emailFromToken = req.userEmail;
+  const role = req.userRole;
   if (!project_id || !taskId) {
-    return res.status(400).json({ error: 'ID не было получено' });
+    return res.status(400).json({ error: 'ID проекта и задачи обязательны для копирования' });
   }
   try {
-    await pool.query('BEGIN');
-    const task = await pool.query(`SELECT * FROM tasks WHERE id = $1`, [taskId])
-    if (task.rows.length === 0){
-      await pool.query('ROLLBACK');
-      return res.status(400).json({ error: 'Задача не найдена' });
-    }
-    const dates_tasks = await pool.query(`SELECT * FROM dates_tasks WHERE task_id = $1 ORDER BY execution_date`, [taskId])
-    if (dates_tasks.rows.length === 0) {
-      await pool.query('ROLLBACK');
-      return res.status(400).json({ error: 'Не найдены даты выполнения для задачи' });
-    }
-    const stages = await pool.query(`SELECT * FROM stages WHERE task_id = $1`, [taskId])
-    let dates_stages;
-    if (stages.rows.length !== 0) {
-      dates_stages = await pool.query(`SELECT dates_stages.* FROM dates_stages LEFT JOIN stages ON dates_stages.stage_id = stages.id WHERE stages.task_id = $1 ORDER BY execution_date`, [taskId])
-      if (dates_stages.rows.length === 0) {
-        await pool.query('ROLLBACK');
-        return res.status(400).json({ error: 'Не найдены даты выполнения для задачи' });
+    if (role !== 'admin') {
+      const taskAccess = await pool.query(`
+        SELECT t.id FROM tasks t 
+        JOIN projects p ON t.project_id = p.id
+        JOIN users u ON p.users_id = u.id
+        WHERE t.id = $1 AND u.email = $2`, [taskId, emailFromToken]
+      );
+      if (taskAccess.rows.length === 0) {
+        return res.status(403).json({ error: 'У вас нет доступа к исходной копируемой задаче' });
       }
+    }
+    const task = await pool.query(`SELECT * FROM tasks WHERE id = $1`, [taskId]);
+    if (task.rows.length === 0) return res.status(404).json({ error: 'Задача не найдена' });
+    const dates_tasks = await pool.query(`SELECT * FROM dates_tasks WHERE task_id = $1 ORDER BY execution_date`, [taskId]);
+    if (dates_tasks.rows.length === 0) return res.status(400).json({ error: 'Не найдены календарные даты для задачи' });
+    const stages = await pool.query(`SELECT * FROM stages WHERE task_id = $1`, [taskId]);
+    let dates_stages = { rows: [] };
+    if (stages.rows.length !== 0) {
+      dates_stages = await pool.query(`SELECT dates_stages.* FROM dates_stages LEFT JOIN stages ON dates_stages.stage_id = stages.id WHERE stages.task_id = $1 ORDER BY execution_date`, [taskId]);
     }  
-    const status = await pool.query(`SELECT status.* FROM status LEFT JOIN users ON status.users_id = users.id WHERE users.email = $1`, [emailFromToken])
+    const status = await pool.query(`SELECT status.* FROM status LEFT JOIN users ON status.users_id = users.id WHERE users.email = $1`, [emailFromToken]);
     const findStatusIdByCode = (systemCode) => {
       const st = status.rows.find(s => s.system_code === systemCode);
       return st ? st.id : null;
     };
-    let new_status_id;
-    if (task.rows[0].status_id === findStatusIdByCode('завершение'))
-      new_status_id = findStatusIdByCode('ожидание');
-    else
-      new_status_id = task.rows[0].status_id;
-      const now = new Date();
-      const resultTask = await pool.query(
-        `INSERT INTO tasks (project_id, task_name, description, status_id, matrix_id, deadline, pomodoros_planned, final_deadline, pomodoros_spent, created_at, repeat_type_id, number_repeat) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, '1900-01-01', $8, $9, $10, $11) RETURNING id`,
-        [project_id, task.rows[0].task_name, task.rows[0].description, new_status_id, task.rows[0].matrix_id, task.rows[0].deadline, task.rows[0].pomodoros_planned, task.rows[0].pomodoros_spent, now, task.rows[0].repeat_type_id, task.rows[0].number_repeat]
-      );
-      const exec_status = await pool.query(`SELECT * FROM execution_status`)
-      const findExecStatusIdByCode = (code) => {
-        const st = exec_status.rows.find(s => s.code === code);
-        return st ? st.id : null;
-      };
+    let new_status_id = task.rows[0].status_id === findStatusIdByCode('завершение') ? findStatusIdByCode('ожидание') : task.rows[0].status_id;
+    await pool.query('BEGIN');
+    const now = new Date();
+    const resultTask = await pool.query(
+      `INSERT INTO tasks (project_id, task_name, description, status_id, matrix_id, deadline, pomodoros_planned, final_deadline, pomodoros_spent, created_at, repeat_type_id, number_repeat) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, '1900-01-01', $8, $9, $10, $11) RETURNING id`,
+      [project_id, task.rows[0].task_name, task.rows[0].description, new_status_id, task.rows[0].matrix_id, task.rows[0].deadline, task.rows[0].pomodoros_planned, task.rows[0].pomodoros_spent, now, task.rows[0].repeat_type_id, task.rows[0].number_repeat]
+    );
+    const exec_status = await pool.query(`SELECT id, code FROM execution_status`);
+    const findExecStatusIdByCode = (code) => {
+      const st = exec_status.rows.find(s => s.code === code);
+      return st ? st.id : null;
+    };
     const allCompleted = dates_tasks.rows.every(row => row.exec_status_id === findExecStatusIdByCode('выполнение'));
-    if (allCompleted)
-          for (const date of dates_tasks.rows) {
-            await pool.query(
-              `INSERT INTO dates_tasks (task_id, execution_date,  planned_start_time, planned_end_time, actual_start_time, actual_end_time, exec_status_id) 
-              VALUES ($1, $2, $3, $4, '00:00:00', '00:00:00', $5) RETURNING id`,
-              [resultTask.rows[0].id, date.execution_date,  date.planned_start_time, date.planned_end_time, findExecStatusIdByCode('ожидание')]
-            );    
-          }
-    else
-          for (const date of dates_tasks.rows) {
-            await pool.query(
-              `INSERT INTO dates_tasks (task_id, execution_date,  planned_start_time, planned_end_time, actual_start_time, actual_end_time, exec_status_id) 
-              VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-              [resultTask.rows[0].id, date.execution_date,  date.planned_start_time, date.planned_end_time, date.actual_start_time, date.actual_end_time, date.exec_status_id]
-            );    
-          }    
-      if (stages.rows.length !== 0) {
+    for (const taskDate of dates_tasks.rows) {
+      const statusId = allCompleted ? findExecStatusIdByCode('ожидание') : taskDate.exec_status_id;
+      const actualStart = allCompleted ? '00:00:00' : taskDate.actual_start_time;
+      const actualEnd = allCompleted ? '00:00:00' : taskDate.actual_end_time;
+      await pool.query(
+        `INSERT INTO dates_tasks (task_id, execution_date, planned_start_time, planned_end_time, actual_start_time, actual_end_time, exec_status_id) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [resultTask.rows[0].id, taskDate.execution_date, taskDate.planned_start_time, taskDate.planned_end_time, actualStart, actualEnd, statusId]
+      );    
+    }
+    if (stages.rows.length !== 0) {
         for (const stage of stages.rows) {
           let stage_id = await pool.query(
             `INSERT INTO stages (task_id, stage_name, description, deadline, pomodoros_planned, final_deadline, pomodoros_spent, created_at, order_stage_in_list) 
-            VALUES ($1, $2, $3, $4, $5, '1900-01-01', $6, $7, $8) RETURNING id`,
+             VALUES ($1, $2, $3, $4, $5, '1900-01-01', $6, $7, $8) RETURNING id`,
             [resultTask.rows[0].id, stage.stage_name, stage.description, stage.deadline, stage.pomodoros_planned, stage.pomodoros_spent, now, stage.order_stage_in_list]
           );
-            for (const date of dates_stages.rows)
-              if (stage.id === date.stage_id)
-                if (allCompleted)
-                  await pool.query(
-                    `INSERT INTO dates_stages (stage_id, execution_date,  planned_start_time, planned_end_time, actual_start_time, actual_end_time, exec_status_id) 
-                      VALUES ($1, $2, $3, $4, '00:00:00', '00:00:00', $5) RETURNING id`,
-                      [stage_id.rows[0].id, date.execution_date,  date.planned_start_time, date.planned_end_time, findExecStatusIdByCode('ожидание')]
-                    );
-                else
-                  await pool.query(
-                    `INSERT INTO dates_stages (stage_id, execution_date,  planned_start_time, planned_end_time, actual_start_time, actual_end_time, exec_status_id) 
-                      VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-                      [stage_id.rows[0].id, date.execution_date,  date.planned_start_time, date.planned_end_time, date.actual_start_time, date.actual_end_time, date.exec_status_id]
-                  );
+          for (const stageDate of dates_stages.rows) {
+            if (stage.id === stageDate.stage_id) {
+              const statusId = allCompleted ? findExecStatusIdByCode('ожидание') : stageDate.exec_status_id;
+              const actualStart = allCompleted ? '00:00:00' : stageDate.actual_start_time;
+              const actualEnd = allCompleted ? '00:00:00' : stageDate.actual_end_time;
+              await pool.query(
+                `INSERT INTO dates_stages (stage_id, execution_date, planned_start_time, planned_end_time, actual_start_time, actual_end_time, exec_status_id) 
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [stage_id.rows[0].id, stageDate.execution_date, stageDate.planned_start_time, stageDate.planned_end_time, actualStart, actualEnd, statusId]
+              );
+            }
+          }
         }
     }
     await pool.query('COMMIT');
     res.json(resultTask.rows[0]);
   } catch (err) {
-      await pool.query('ROLLBACK');
+      await pool.query('ROLLBACK'); // Моментальный откат всей цепочки клонирования при сбоях
       console.error(err);
       if (err.message.includes('значение не умещается в тип'))
-        res.status(500).json({ error: 'Ошибка добавления этапа: Введено слишком длинное значение' });
+        res.status(500).json({ error: 'Ошибка копирования: Введено слишком длинное значение' });
       else 
-        res.status(500).json({ error: 'Ошибка добавления этапа' });
+        res.status(500).json({ error: 'Ошибка глубокого копирования задачи' });
   }
 });
 app.delete('/api/stage_delete/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
+  const emailFromToken = req.userEmail;
+  const role = req.userRole;
   try {
+    if (role !== 'admin') {
+      const accessCheck = await pool.query(`
+        SELECT stages.id FROM stages 
+        JOIN tasks ON stages.task_id = tasks.id
+        JOIN projects ON tasks.project_id = projects.id
+        JOIN users ON projects.users_id = users.id
+        WHERE stages.id = $1 AND users.email = $2`, [id, emailFromToken]
+      );
+      if (accessCheck.rows.length === 0) {
+        return res.status(403).json({ error: 'У вас нет доступа к этому этапу или он не существует' });
+      }
+    }
     await pool.query('BEGIN');
       const exists = await pool.query('SELECT * FROM stages WHERE id = $1', [id]);
       if (exists.rows.length === 0) {
@@ -1587,8 +1910,7 @@ app.delete('/api/stage_delete/:id', authMiddleware, async (req, res) => {
       if (existsDate.rows.length === 0) {
           await pool.query('ROLLBACK');
           return res.status(404).json({ error: 'Сроки этапа не найдены' });
-      }      
-      await pool.query('DELETE FROM dates_stages WHERE stage_id = $1', [id]);
+      }
       await pool.query('DELETE FROM stages WHERE id = $1', [id]);   
       await pool.query('COMMIT');
       res.json({ message: 'Этап удален' });
@@ -1600,7 +1922,20 @@ app.delete('/api/stage_delete/:id', authMiddleware, async (req, res) => {
 });
 app.delete('/api/task_delete/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
+  const emailFromToken = req.userEmail;
+  const role = req.userRole;
   try {
+    if (role !== 'admin') {
+      const accessCheck = await pool.query(`
+        SELECT tasks.id FROM tasks 
+        JOIN projects ON tasks.project_id = projects.id
+        JOIN users ON projects.users_id = users.id
+        WHERE tasks.id = $1 AND users.email = $2`, [id, emailFromToken]
+      );
+      if (accessCheck.rows.length === 0) {
+        return res.status(403).json({ error: 'У вас нет доступа к этой задаче или она не существует' });
+      }
+    }
     await pool.query('BEGIN');
       const existsTask = await pool.query('SELECT * FROM tasks WHERE id = $1', [id]);
       if (existsTask.rows.length === 0) {
@@ -1612,12 +1947,6 @@ app.delete('/api/task_delete/:id', authMiddleware, async (req, res) => {
           await pool.query('ROLLBACK');
           return res.status(404).json({ error: 'Сроки задачи не найдены' });
       }        
-      const exists = await pool.query('SELECT * FROM stages WHERE task_id = $1', [id]);
-      if (exists.rows.length !== 0) {
-      await pool.query(`DELETE FROM dates_stages WHERE stage_id IN (select id from stages WHERE task_id = $1)`, [id]);
-      await pool.query('DELETE FROM stages WHERE task_id = $1', [id]); 
-      }  
-      await pool.query('DELETE FROM dates_tasks WHERE task_id = $1', [id]);
       await pool.query('DELETE FROM tasks WHERE id = $1', [id]);          
       await pool.query('COMMIT');
       res.json({ message: 'Задача удалена' });
