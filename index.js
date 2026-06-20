@@ -351,7 +351,7 @@ app.get('/api/profile_status_email/:id', authMiddleware, async (req, res) => {
       }
       email = res1.rows[0].email;
     }
-    query = 'SELECT status.* FROM status JOIN users ON status.users_id = users.id WHERE users.email = $1';
+    query = 'SELECT status.* FROM status JOIN users ON status.users_id = users.id WHERE users.email = $1 order by status.id';
     const result = await pool.query(query, [email]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Пользователь не найден' });
@@ -393,7 +393,7 @@ app.get('/api/profile_matrix_note', async (req, res) => {
 app.get('/api/profile_status_note', authMiddleware, async (req, res) => {
   try {
     let query;
-    query = 'SELECT status.* FROM status JOIN users ON status.users_id = users.id WHERE users.note = $1';
+    query = 'SELECT status.* FROM status JOIN users ON status.users_id = users.id WHERE users.note = $1 order by status.id';
     const result = await pool.query(query, ["Администратор системы"]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Настройки статусов администратора не найдены' });
@@ -1110,7 +1110,7 @@ app.put('/api/task_put/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
   const email = req.userEmail;
   const { value, field, isChangeDeadline } = req.body;
-  const allowedFields = ['project_id', 'task_name', 'description', 'status_id', 'matrix_id', 'deadline', 'pomodoros_planned', 'final_deadline', 'pomodoros_spent', 'created_at', 'repeat_type_id', 'number_repeat'];
+  const allowedFields = ['project_id', 'task_name', 'description', 'status_id', 'matrix_id', 'deadline', 'pomodoros_planned', 'final_deadline', 'created_at', 'repeat_type_id', 'number_repeat'];
   if (!allowedFields.includes(field)) {
       return res.status(400).json({ error: 'Недопустимое поле для изменения' });
   }
@@ -1370,7 +1370,7 @@ app.post('/api/task_add/', authMiddleware, async (req, res) => {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
-    const user = await pool.query(`SELECT status.id from status LEFT JOIN users ON status.users_id = users.id WHERE users.email = $1 ORDER BY status.id LIMIT 1`, [emailFromToken]);
+    const user = await pool.query(`SELECT status.id from status LEFT JOIN users ON status.users_id = users.id WHERE users.email = $1 AND status.system_code = 'ожидание'`, [emailFromToken]);
     const time = await pool.query(`SELECT settings.start_working_day, settings.end_working_day from settings LEFT JOIN users ON users.id = settings.users_id WHERE users.email = $1`, [emailFromToken]);
     if (user.rows.length === 0)  {
       await pool.query('ROLLBACK');
@@ -1379,10 +1379,10 @@ app.post('/api/task_add/', authMiddleware, async (req, res) => {
     if (time.rows.length === 0) {
       await pool.query('ROLLBACK');
       return res.status(400).json({ error: 'Ошибка получения данных о настройках пользователя' });
-    }  
+    }
     const result = await pool.query(
-      `INSERT INTO tasks (project_id, task_name, description, status_id, matrix_id, deadline, pomodoros_planned, final_deadline, pomodoros_spent, created_at, repeat_type_id, number_repeat) 
-       VALUES ($1, $2, $3, $4, $5, $6, -1, '1900-01-01', 0, $7, 1, '{0}') RETURNING id`,
+      `INSERT INTO tasks (project_id, task_name, description, status_id, matrix_id, deadline, pomodoros_planned, final_deadline, created_at, repeat_type_id, number_repeat) 
+       VALUES ($1, $2, $3, $4, $5, $6, -1, '1900-01-01', $7, 1, '{0}') RETURNING id`,
       [id, formData.task_name, formData.description, user.rows[0].id, Number(formData.matrix_id), new Date(`${year}-${month}-${day}`), today]
     );
     const status = await pool.query(`select id from execution_status where code = $1 LIMIT 1`, ['ожидание']);
@@ -1485,55 +1485,67 @@ app.get('/api/tasks_name/', authMiddleware, async (req, res) => {
 app.post('/api/pomodoro_add/', async (req, res) => {
   let userEmail;
   try { 
-    const decoded = jwt.verify(req.headers.authorization?.split(' ')[1], process.env.JWT_SECRET, { ignoreExpiration: true });
-    userEmail = decoded.email;
+      const decoded = jwt.verify(req.headers.authorization?.split(' ')[1], process.env.JWT_SECRET, { ignoreExpiration: true });
+      userEmail = decoded.email;
   } catch (error) {
-    return res.status(401).json({ error: 'Неверный токен сессии' });
+      return res.status(401).json({ error: 'Неверный токен сессии' });
   }
   const { task_id, stage_id, pomodoro_date, start_time, end_time, duration, was_interrupted } = req.body;
-  if ((!task_id && task_id != 0) || (!stage_id && stage_id != 0) || !pomodoro_date || !start_time || !end_time || !duration) {
-    return res.status(400).json({ error: 'Все обязательные поля таймера должны быть заполнены' });
+  if (!pomodoro_date || !start_time || !end_time || !duration) {
+      return res.status(400).json({ error: 'Все обязательные поля таймера должны быть заполнены' });
+  }
+  if (task_id === undefined || stage_id === undefined) {
+      return res.status(400).json({ error: 'Поля task_id и stage_id должны быть переданы' });
   }
   try { 
-    const userResult = await pool.query('SELECT id FROM users WHERE email = $1', [userEmail]);
-    if (userResult.rows.length === 0) return res.status(404).json({ error: 'Пользователь не найден' });
-    const users_id = userResult.rows[0].id;
-    if (task_id !== 0) {
-       const taskCheck = await pool.query(`SELECT t.id FROM tasks t JOIN projects p ON t.project_id = p.id WHERE t.id = $1 AND p.users_id = $2`, [task_id, users_id]);
-       if (taskCheck.rows.length === 0) return res.status(403).json({ error: 'Доступ запрещен к указанной задаче' });
-    }
-    await pool.query('BEGIN');
-    const result = await pool.query(
-       `INSERT INTO pomodoro (task_id, stage_id, pomodoro_date, start_time, end_time, duration, was_interrupted, users_id) 
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`, 
-       [task_id, stage_id, pomodoro_date, start_time, end_time, duration, was_interrupted, users_id]
-    );
-    if (task_id === 0) {
+      const userResult = await pool.query('SELECT id FROM users WHERE email = $1', [userEmail]);
+      if (userResult.rows.length === 0) {
+          return res.status(404).json({ error: 'Пользователь не найден' });
+      }
+      const users_id = userResult.rows[0].id;
+      if (task_id !== null && task_id !== 0) {
+          const taskCheck = await pool.query(
+              `SELECT t.id FROM tasks t 
+               JOIN projects p ON t.project_id = p.id 
+               WHERE t.id = $1 AND p.users_id = $2`,
+              [task_id, users_id]
+          );
+          if (taskCheck.rows.length === 0) {
+              return res.status(403).json({ error: 'Доступ запрещен к указанной задаче' });
+          }
+      }
+      if (stage_id !== null && stage_id !== 0) {
+          const stageCheck = await pool.query(
+              `SELECT s.id FROM stages s 
+               JOIN tasks t ON s.task_id = t.id
+               JOIN projects p ON t.project_id = p.id 
+               WHERE s.id = $1 AND p.users_id = $2`,
+              [stage_id, users_id]
+          );
+          if (stageCheck.rows.length === 0) {
+              return res.status(403).json({ error: 'Доступ запрещен к указанному этапу' });
+          }
+      }
+      await pool.query('BEGIN');
+      const result = await pool.query(
+          `INSERT INTO pomodoro (task_id, stage_id, pomodoro_date, start_time, end_time, duration, was_interrupted, users_id) 
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`, 
+          [task_id, stage_id, pomodoro_date, start_time, end_time, duration, was_interrupted || false, users_id]
+      );
+      if (!task_id || task_id === 0) {
+          await pool.query('COMMIT');
+          return res.json(result.rows[0]);      
+      }
+      if (!stage_id || stage_id === 0) {
+          await pool.query('COMMIT');
+          return res.json(result.rows[0]);       
+      }
       await pool.query('COMMIT');
-      return res.json(result.rows[0]);      
-    }
-    if (stage_id === 0) {
-        const count = await pool.query('SELECT pomodoros_spent FROM tasks WHERE id = $1', [task_id]);
-        if (count.rows.length === 0) {
-          await pool.query('ROLLBACK');
-          return res.status(400).json({ error: 'Ошибка получения количества помидоров задачи' });
-        }
-        await pool.query(`UPDATE tasks SET pomodoros_spent = $1 WHERE id = $2`, [count.rows[0].pomodoros_spent + 1, task_id]);
-        await pool.query('COMMIT');
-        return res.json(result.rows[0]);       
-    }
-    const count = await pool.query('SELECT pomodoros_spent FROM stages WHERE id = $1', [stage_id]);
-    if (count.rows.length === 0) {
-      await pool.query('ROLLBACK');
-      return res.status(400).json({ error: 'Ошибка получения количества помидоров этапа' });
-    }
-    await pool.query(`UPDATE stages SET pomodoros_spent = $1 WHERE id = $2`, [count.rows[0].pomodoros_spent + 1, stage_id]);
-    await pool.query('COMMIT');
-    res.json(result.rows[0]);    
+      res.json(result.rows[0]);    
   } catch (err) {
-    await pool.query('ROLLBACK');
-    console.error(err);
-    res.status(500).json({ error: 'Ошибка добавления сессии помодоро' });
+      await pool.query('ROLLBACK');
+      console.error(err);
+      res.status(500).json({ error: 'Ошибка добавления сессии помодоро' });
   }
 });
 app.get('/api/pomodoro', authMiddleware, async (req, res) => {
@@ -1617,8 +1629,8 @@ app.post('/api/stage_add/', authMiddleware, async (req, res) => {
     }
     await pool.query('BEGIN');
     const result = await pool.query(
-      `INSERT INTO stages (task_id, stage_name, description, deadline, pomodoros_planned, final_deadline, pomodoros_spent, created_at, order_stage_in_list) 
-       VALUES ($1, $2, $3, $4, -1, '1900-01-01', 0, $5, $6) RETURNING id`,
+      `INSERT INTO stages (task_id, stage_name, description, deadline, pomodoros_planned, final_deadline, created_at, order_stage_in_list) 
+       VALUES ($1, $2, $3, $4, -1, '1900-01-01', $5, $6) RETURNING id`,
       [id, formData.stage_name, formData.description, task.rows[0].deadline, currentDate, count]
     );
     for (const taskDate of dates.rows) {
@@ -1726,7 +1738,7 @@ app.put('/api/stage_put/:id', authMiddleware, async (req, res) => {
   const { value, field } = req.body;
   const emailFromToken = req.userEmail;
   const role = req.userRole;
-  const allowedFields = ['task_id', 'stage_name', 'description', 'deadline', 'pomodoros_planned', 'final_deadline', 'pomodoros_spent', 'order_stage_in_list'];
+  const allowedFields = ['task_id', 'stage_name', 'description', 'deadline', 'pomodoros_planned', 'final_deadline', 'order_stage_in_list'];
   if (!allowedFields.includes(field)) {
       return res.status(400).json({ error: 'Недопустимое поле для изменения' });
   }
@@ -1831,9 +1843,9 @@ app.post('/api/task_copy/', authMiddleware, async (req, res) => {
     await pool.query('BEGIN');
     const now = new Date();
     const resultTask = await pool.query(
-      `INSERT INTO tasks (project_id, task_name, description, status_id, matrix_id, deadline, pomodoros_planned, final_deadline, pomodoros_spent, created_at, repeat_type_id, number_repeat) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, '1900-01-01', $8, $9, $10, $11) RETURNING id`,
-      [project_id, task.rows[0].task_name, task.rows[0].description, new_status_id, task.rows[0].matrix_id, task.rows[0].deadline, task.rows[0].pomodoros_planned, task.rows[0].pomodoros_spent, now, task.rows[0].repeat_type_id, task.rows[0].number_repeat]
+      `INSERT INTO tasks (project_id, task_name, description, status_id, matrix_id, deadline, pomodoros_planned, final_deadline, created_at, repeat_type_id, number_repeat) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, '1900-01-01', $8, $9, $10) RETURNING id`,
+      [project_id, task.rows[0].task_name, task.rows[0].description, new_status_id, task.rows[0].matrix_id, task.rows[0].deadline, task.rows[0].pomodoros_planned, now, task.rows[0].repeat_type_id, task.rows[0].number_repeat]
     );
     const exec_status = await pool.query(`SELECT id, code FROM execution_status`);
     const findExecStatusIdByCode = (code) => {
@@ -1854,9 +1866,9 @@ app.post('/api/task_copy/', authMiddleware, async (req, res) => {
     if (stages.rows.length !== 0) {
         for (const stage of stages.rows) {
           let stage_id = await pool.query(
-            `INSERT INTO stages (task_id, stage_name, description, deadline, pomodoros_planned, final_deadline, pomodoros_spent, created_at, order_stage_in_list) 
-             VALUES ($1, $2, $3, $4, $5, '1900-01-01', $6, $7, $8) RETURNING id`,
-            [resultTask.rows[0].id, stage.stage_name, stage.description, stage.deadline, stage.pomodoros_planned, stage.pomodoros_spent, now, stage.order_stage_in_list]
+            `INSERT INTO stages (task_id, stage_name, description, deadline, pomodoros_planned, final_deadline, created_at, order_stage_in_list) 
+             VALUES ($1, $2, $3, $4, $5, '1900-01-01', $6, $7) RETURNING id`,
+            [resultTask.rows[0].id, stage.stage_name, stage.description, stage.deadline, stage.pomodoros_planned, now, stage.order_stage_in_list]
           );
           for (const stageDate of dates_stages.rows) {
             if (stage.id === stageDate.stage_id) {
@@ -1965,8 +1977,8 @@ app.get('/api/get_tasks_time_pomodoro', authMiddleware, async (req, res) => {
       SELECT
         tasks.task_name,
         tasks.id as task_id,
-        tasks.pomodoros_planned as tasks_pomodoros_planned, tasks.pomodoros_spent as tasks_pomodoros_spent,
-        stages.pomodoros_planned as stages_pomodoros_planned, stages.pomodoros_spent as stages_pomodoros_spent,
+        tasks.pomodoros_planned as tasks_pomodoros_planned,
+        stages.pomodoros_planned as stages_pomodoros_planned,
         projects.project_name,
         projects.id as project_id,
         status.system_code,
@@ -2002,7 +2014,7 @@ app.get('/api/get_PomodoroWithoutTasks', authMiddleware, async (req, res) => {
   const emailFromToken = req.userEmail;
   const { date } = req.query;
   try {
-    let query_withoutTask = `SELECT COUNT(*) as count FROM pomodoro LEFT JOIN users ON pomodoro.users_id = users.id where users.email = $1 and pomodoro_date = $2 and task_id = 0`;
+    let query_withoutTask = `SELECT COUNT(*) as count FROM pomodoro LEFT JOIN users ON pomodoro.users_id = users.id where users.email = $1 and pomodoro_date = $2 and task_id IS NULL`;
     const result_withoutTask = await pool.query(query_withoutTask, [emailFromToken, date]);
     let query_totalCount = `SELECT COUNT(*) as count FROM pomodoro LEFT JOIN users ON pomodoro.users_id = users.id where users.email = $1 and pomodoro_date = $2`;
     const result_totalCount = await pool.query(query_totalCount, [emailFromToken, date]); 
@@ -2036,7 +2048,6 @@ app.get('/api/tasks_with_user', authMiddleware, async (req, res) => {
         tasks.deadline,
         tasks.pomodoros_planned,
         tasks.final_deadline,
-        tasks.pomodoros_spent,
         tasks.created_at,
         repeat_types.type_name as repeat_type_name,
         tasks.number_repeat,
@@ -2052,7 +2063,6 @@ app.get('/api/tasks_with_user', authMiddleware, async (req, res) => {
         stages.deadline as stage_deadline,
         stages.pomodoros_planned as stage_pomodoros_planned,
         stages.final_deadline as stage_final_deadline,
-        stages.pomodoros_spent as stage_pomodoros_spent,
         stages.created_at as stage_created_at,
         stages.order_stage_in_list,
         (SELECT MIN(execution_date) FROM dates_stages WHERE stage_id = stages.id) as min_time_period_dates_stages,
@@ -2096,7 +2106,6 @@ app.get('/api/tasks_for_gantt', authMiddleware, async (req, res) => {
               tasks.deadline,
               tasks.created_at,
               tasks.pomodoros_planned,
-              tasks.pomodoros_spent,
               tasks.status_id,
               status.status_name,
               status.system_code,
@@ -2202,6 +2211,46 @@ app.get('/api/matrix_from_project_id/:project_id', authMiddleware, async (req, r
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Ошибка при получении информации о настройках матрицы пользователей' });
+  }
+});
+app.get('/api/pomodoros_spent_tasks/:task_id', authMiddleware, async (req, res) => {
+  const { task_id } = req.params;
+  try {
+    if (!task_id) {
+      return res.status(400).json({ error: 'Не все значения получены' });
+    }
+    const taskIdNum = parseInt(task_id, 10);
+    if (isNaN(taskIdNum)) {
+      return res.status(400).json({ error: 'Получено не целое число' });
+    }
+    let query = `SELECT COUNT(*) AS pomodoros_spent FROM pomodoro WHERE pomodoro.task_id = $1 AND pomodoro.stage_id IS NULL`;
+    const result = await pool.query(query, [taskIdNum]);
+    res.json({
+      count: parseInt(result.rows[0]?.pomodoros_spent, 10) || 0
+    });
+  } catch (err) {
+    console.error('Ошибка при подсчёте помидоров:', err);
+    res.status(500).json({ error: 'Ошибка при подсчёте помидоров' });
+  }
+});
+app.get('/api/pomodoros_spent_stages/:stage_id', authMiddleware, async (req, res) => {
+  const { stage_id } = req.params;
+  try {
+    if (!stage_id) {
+      return res.status(400).json({ error: 'Не все значения получены' });
+    }
+    const stageIdNum = parseInt(stage_id, 10);
+    if (isNaN(stageIdNum)) {
+      return res.status(400).json({ error: 'Получено не целое число' });
+    }
+    let query = `SELECT COUNT(*) AS pomodoros_spent FROM pomodoro where pomodoro.stage_id = $1`;
+    const result = await pool.query(query, [stageIdNum]);
+    res.json({
+      count: parseInt(result.rows[0]?.pomodoros_spent, 10) || 0
+    });
+  } catch (err) {
+    console.error('Ошибка при подсчёте помидоров:', err);
+    res.status(500).json({ error: 'Ошибка при подсчёте помидоров' });
   }
 });
 app.get('/', (req, res) => {
