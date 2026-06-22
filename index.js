@@ -24,6 +24,13 @@ app.use(express.json());
 
 // Функция для генерации JWT
 const generateToken = (user) => jwt.sign(user, process.env.JWT_SECRET, { expiresIn: '1h' });
+app.get('/api/auth/check-role', authMiddleware, (req, res) => {
+  try {
+      return res.json({email: req.userEmail, role: req.userRole});
+  } catch (e) {
+      return res.status(500).json({ message: "Ошибка сервера" });
+  }
+});
 const validateUserData = (user, res) => {
   const { first_name, last_name, email, phone_number, birthday } = user;
     if (!first_name || !last_name || !email || !phone_number || !birthday) {

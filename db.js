@@ -263,7 +263,6 @@ async function runQueries() {
                 deadline DATE NOT NULL DEFAULT '3000-01-01',
                 pomodoros_planned INTEGER NOT NULL DEFAULT -1,
                 final_deadline DATE NOT NULL DEFAULT '1900-01-01',
-                pomodoros_spent INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 repeat_type_id INTEGER NOT NULL REFERENCES repeat_types(id) ON DELETE CASCADE,
                 number_repeat INTEGER[] NOT NULL
@@ -491,7 +490,6 @@ async function runQueries() {
                 deadline DATE NOT NULL DEFAULT '3000-01-01',
                 pomodoros_planned INTEGER NOT NULL DEFAULT -1,
                 final_deadline DATE NOT NULL DEFAULT '1900-01-01',
-                pomodoros_spent INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 order_stage_in_list INTEGER NOT NULL
              );
