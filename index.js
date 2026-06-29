@@ -1123,11 +1123,13 @@ app.put('/api/task_put/:id', authMiddleware, async (req, res) => {
   }
   if (!value) return res.status(400).json({ error: 'Значение поля должно быть заполнено' });
   try {
-      const taskAccess = await pool.query(
-          `SELECT tasks.id FROM tasks JOIN projects ON tasks.project_id = projects.id JOIN users ON projects.users_id = users.id WHERE tasks.id = $1 AND users.email = $2`, 
-          [id, email]
-      );
-      if (taskAccess.rows.length === 0) return res.status(403).json({ error: 'Доступ запрещен' });
+      if (req.userRole != 'admin') {
+        const taskAccess = await pool.query(
+            `SELECT tasks.id FROM tasks JOIN projects ON tasks.project_id = projects.id JOIN users ON projects.users_id = users.id WHERE tasks.id = $1 AND users.email = $2`, 
+            [id, email]
+        );
+        if (taskAccess.rows.length === 0) return res.status(403).json({ error: 'Доступ запрещен' });
+      }
       const result = await pool.query(`UPDATE tasks SET ${field} = $1 WHERE id = $2 RETURNING *`, [value, id]);
       if (field === 'deadline' && isChangeDeadline) {
           await pool.query(`UPDATE stages SET ${field} = $1 WHERE task_id = $2`, [value, id]);
