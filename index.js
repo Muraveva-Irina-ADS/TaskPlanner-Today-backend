@@ -833,11 +833,13 @@ app.delete('/api/project_delete/:id', authMiddleware, async (req, res) => {
       await pool.query('ROLLBACK');
       return res.status(403).json({ error: 'Доступ запрещен' });
     }
-    const projectExists = await pool.query('SELECT * FROM projects WHERE id = $1 AND users_id = $2', [id, userExec.rows[0].id]);
-    if (projectExists.rows.length === 0) {
-      await pool.query('ROLLBACK');
-      return res.status(404).json({ error: 'Проект не найден' });
-    }
+    if (req.userRole !== 'admin') {
+      const projectExists = await pool.query('SELECT * FROM projects WHERE id = $1 AND users_id = $2', [id, userExec.rows[0].id]);
+      if (projectExists.rows.length === 0) {
+        await pool.query('ROLLBACK');
+        return res.status(404).json({ error: 'Проект не найден' });
+      }
+    }   
     await pool.query('DELETE FROM projects WHERE id = $1', [id]);
     await pool.query('COMMIT');   
     res.json({ message: 'Проект удален' });
@@ -880,7 +882,7 @@ app.put('/api/projects_put/:id',  authMiddleware, async (req, res) => {
       finalUsersId = formData.users_id || projectCheck.rows[0].users_id;
     }
     else {
-        const userResult = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+        const userResult = await pool.query('SELECT id FROM users WHERE email = $1', [req.userEmail]);
         if (userResult.rows.length === 0) {
             return res.status(403).json({ error: 'Доступ запрещен' });
         }
@@ -941,7 +943,7 @@ app.get('/api/tasks/:id', authMiddleware, async (req, res) => {
         return res.status(404).json({ error: 'Указанный проект не найден в системе' });
     }
     let query;
-    query = 'SELECT tasks.*, status.status_name, dates_tasks.execution_date, execution_status.exec_status_name, execution_status.code, execution_status.exec_color FROM dates_tasks LEFT JOIN tasks ON dates_tasks.task_id = tasks.id LEFT JOIN status ON tasks.status_id = status.id LEFT JOIN execution_status ON dates_tasks.exec_status_id = execution_status.id WHERE project_id = $1 AND status.system_code != \'завершение\' ORDER BY dates_tasks.execution_date';
+    query = 'SELECT tasks.*, status.status_name, matrix.matrix_name, repeat_types.type_name as repeat_type_name, dates_tasks.execution_date, execution_status.exec_status_name, execution_status.code, execution_status.exec_color FROM dates_tasks LEFT JOIN tasks ON dates_tasks.task_id = tasks.id LEFT JOIN status ON tasks.status_id = status.id LEFT JOIN matrix ON tasks.matrix_id = matrix.id LEFT JOIN repeat_types ON tasks.repeat_type_id = repeat_types.id LEFT JOIN execution_status ON dates_tasks.exec_status_id = execution_status.id WHERE project_id = $1 AND status.system_code != \'завершение\' ORDER BY dates_tasks.execution_date';
     const result = await pool.query(query, [id]);
     res.json(result.rows);
   } catch (err) {
